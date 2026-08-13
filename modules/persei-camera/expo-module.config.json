@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["PerseiCameraModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.perseicamera.PerseiCameraModule"]
+  }
+}
