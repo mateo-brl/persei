@@ -570,7 +570,9 @@ final class CameraEngine: NSObject {
       self.sessionQueue.async {
         self.inFlightCaptures.removeValue(forKey: captureId)
         if case .success(let uris) = result, let uri = uris.first, let url = URL(string: uri) {
-          stacker.add(url: url)
+          autoreleasepool {
+            stacker.add(url: url)
+          }
           try? FileManager.default.removeItem(at: url)
           self.stackFramesDone += 1
           self.onLongExposureProgress?(["frame": self.stackFramesDone, "total": total])

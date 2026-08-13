@@ -33,7 +33,11 @@ final class FrameStacker {
   }
 
   func add(url: URL) {
-    guard var frame = CIImage(contentsOf: url) else { return }
+    // Charge la trame en mémoire : le fichier temporaire est supprimé par
+    // l'appelant juste après, et un CIImage(contentsOf:) paresseux pointerait
+    // vers un fichier disparu (crash au rendu, notamment via la référence
+    // d'alignement conservée entre les trames).
+    guard let data = try? Data(contentsOf: url), var frame = CIImage(data: data) else { return }
 
     if alignEnabled {
       if let reference = referenceFrame {
