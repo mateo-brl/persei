@@ -279,6 +279,11 @@ export default function CameraScreen() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // La molette EV démarre à 0, pas au minimum de la plage.
+  useEffect(() => {
+    setEvIdx(nearestIndex(evStops, 0));
+  }, [evStops]);
+
   // Aides de visée natives + loupe automatique pendant le réglage du focus.
   useEffect(() => {
     PerseiCamera.setAssistOptions(peaking, zebras, histogramOn).catch(() => {});
@@ -699,9 +704,7 @@ export default function CameraScreen() {
                 style={[styles.rawBadge, raw && styles.rawBadgeActive]}
                 onPress={() => setRaw(!raw)}
               >
-                <Text style={[styles.rawText, raw && styles.rawTextActive]}>
-                  {caps.supportsProRaw ? 'ProRAW' : 'RAW'}
-                </Text>
+                <Text style={[styles.rawText, raw && styles.rawTextActive]}>RAW</Text>
               </Pressable>
             ) : null}
             <Pressable
@@ -1063,6 +1066,10 @@ function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
   // Zoom affiché relatif au 1× (le videoZoomFactor du device virtuel compte
   // depuis l'ultra grand-angle).
   const wideZoom = presets.find((p) => p.factor === 1)?.zoom ?? 1;
+  const displayZoom = zoom / wideZoom;
+  // Badge du zoom courant seulement en position intermédiaire (pincement) —
+  // sinon il ressemble à une pastille en double.
+  const onPreset = presets.some((p) => Math.abs(displayZoom - p.factor) < 0.06);
 
   return (
     <View style={styles.lensRow}>
@@ -1077,7 +1084,7 @@ function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
           </Text>
         </Pressable>
       ))}
-      <Text style={styles.zoomText}>{formatZoomFactor(zoom / wideZoom)}</Text>
+      {!onPreset ? <Text style={styles.zoomText}>{formatZoomFactor(displayZoom)}</Text> : null}
     </View>
   );
 }
@@ -1150,7 +1157,7 @@ function ChipsRow({
     {
       key: 'tint',
       label: 'TEINTE',
-      value: wbAuto ? 'A' : `${tintValue > 0 ? '+' : ''}${tintValue}`,
+      value: wbAuto ? '0' : `${tintValue > 0 ? '+' : ''}${tintValue}`,
       manual: !wbAuto,
     },
   ];
@@ -1261,7 +1268,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   lensPill: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 16,
   },
@@ -1283,7 +1290,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
   },
   rawBadge: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 9,
     paddingVertical: 8,
     borderRadius: 16,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
