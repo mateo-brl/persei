@@ -1,4 +1,5 @@
 import { Image } from 'expo-image';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -27,7 +28,79 @@ function formatZoomFactor(factor: number): string {
 }
 
 /** Durées de pose proposées (secondes) — aucun plafond matériel, c'est de l'empilement. */
-const POSE_DURATIONS = [10, 30, 60, 120, 300];
+const POSE_DURATIONS = [10, 30, 60, 300, 900, 1800];
+const POSE_DURATION_LABELS = ['10 s', '30 s', '1 min', '5 min', '15 min', '30 min'];
+
+/** Presets scénario : un tap règle exposition, focus, durée et style de pose. */
+interface ScenePreset {
+  id: string;
+  emoji: string;
+  label: string;
+  description: string;
+  duration: number;
+  style: StackMode;
+  iso: number;
+  /** Position de focus manuelle (1 = ∞), ou null pour laisser l'autofocus. */
+  focus: number | null;
+}
+
+const SCENE_PRESETS: ScenePreset[] = [
+  {
+    id: 'meteors',
+    emoji: '🌠',
+    label: 'Étoiles filantes',
+    description:
+      "Pose 1 min en « Les deux » : la fusion max garde les traînées de météores, la moyenne donne un ciel propre. ISO 1600, focus ∞. Trépied, pastille 0,5× ou 1×.",
+    duration: 60,
+    style: 'both',
+    iso: 1600,
+    focus: 1,
+  },
+  {
+    id: 'startrails',
+    emoji: '⭐',
+    label: 'Star trails',
+    description:
+      "Pose 30 min en fusion max : les étoiles dessinent des cercles autour du pôle. ISO 800, focus ∞. Batterie chargée, téléphone bien calé.",
+    duration: 1800,
+    style: 'max',
+    iso: 800,
+    focus: 1,
+  },
+  {
+    id: 'water',
+    emoji: '💧',
+    label: "Filé d'eau",
+    description:
+      "Pose 10 s en moyenne : cascades et vagues deviennent soyeuses. ISO minimal pour ne pas surexposer en plein jour.",
+    duration: 10,
+    style: 'mean',
+    iso: 25,
+    focus: null,
+  },
+  {
+    id: 'fireworks',
+    emoji: '🎆',
+    label: "Feux d'artifice",
+    description:
+      "Pose 10 s en fusion max : toutes les gerbes s'accumulent dans une seule image. ISO 100, focus ∞.",
+    duration: 10,
+    style: 'max',
+    iso: 100,
+    focus: 1,
+  },
+  {
+    id: 'lighttrails',
+    emoji: '🌃',
+    label: 'Light trails',
+    description:
+      "Pose 30 s en fusion max : les phares des voitures deviennent des rubans de lumière. ISO 50.",
+    duration: 30,
+    style: 'max',
+    iso: 50,
+    focus: null,
+  },
+];
 
 const ISO_BASE = [
   25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
@@ -71,6 +144,8 @@ const HELP_TEXTS: Record<string, string> = {
   depth: "Capture la carte de profondeur (utilisée pour les effets portrait en retouche).",
   timer: "Délai avant capture — laisse le temps de stabiliser le téléphone ou de poser.",
   grid: "Grille des tiers : place ton sujet sur les lignes ou intersections pour composer.",
+  nightVision:
+    "Teinte toute l'interface en rouge sombre : tes yeux gardent leur adaptation à l'obscurité (qui prend 20-30 min à revenir après un écran blanc). Indispensable en astro.",
 };
 
 function nearestIndex(values: number[], target: number): number {
@@ -127,6 +202,8 @@ export default function CameraScreen() {
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
+  const [showPresets, setShowPresets] = useState(false);
+  const [nightVision, setNightVision] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
@@ -349,9 +426,37 @@ export default function CameraScreen() {
     [caps]
   );
 
+  /** Applique un preset scénario : exposition, focus, durée et style de pose. */
+  const applyPreset = useCallback(
+    (preset: ScenePreset) => {
+      setCaptureMode('pose');
+      setPoseDuration(preset.duration);
+      setPoseStyle(preset.style);
+      const iIdx = nearestIndex(isoStops, preset.iso);
+      const sIdx = nearestIndex(shutterStops, 1);
+      setIsoIdx(iIdx);
+      setShutterIdx(sIdx);
+      setExposureAuto(false);
+      PerseiCamera.setManualExposure(isoStops[iIdx], shutterStops[sIdx]).catch(() => {});
+      if (preset.focus != null) {
+        const fIdx = nearestIndex(FOCUS_STOPS, preset.focus);
+        setFocusAuto(false);
+        setFocusIdx(fIdx);
+        PerseiCamera.setLensPosition(FOCUS_STOPS[fIdx]).catch(() => {});
+      } else {
+        setFocusAuto(true);
+        PerseiCamera.setAutoFocus().catch(() => {});
+      }
+      setShowPresets(false);
+      setToast(`${preset.emoji} Preset « ${preset.label} » appliqué`);
+    },
+    [isoStops, shutterStops]
+  );
+
   const startPose = useCallback(async () => {
     setPosing(true);
     setPoseProgress(null);
+    activateKeepAwakeAsync('pose').catch(() => {});
     try {
       const media = await MediaLibrary.requestPermissionsAsync();
       if (!media.granted) {
@@ -369,6 +474,7 @@ export default function CameraScreen() {
     } finally {
       setPosing(false);
       setPoseProgress(null);
+      deactivateKeepAwake('pose').catch(() => {});
       // Le natif repasse en exposition auto à la fin d'une pose : si
       // l'utilisateur était en manuel, on réapplique ses réglages.
       if (!exposureAuto) {
@@ -510,6 +616,18 @@ export default function CameraScreen() {
             </View>
           )}
           <View style={styles.topRight}>
+            <Pressable
+              style={[styles.rawBadge, showPresets && styles.rawBadgeActive]}
+              onPress={() => setShowPresets(!showPresets)}
+            >
+              <Text style={[styles.rawText, showPresets && styles.rawTextActive]}>✨</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.rawBadge, nightVision && styles.rawBadgeActive]}
+              onPress={() => setNightVision(!nightVision)}
+            >
+              <Text style={[styles.rawText, nightVision && styles.rawTextActive]}>🌙</Text>
+            </Pressable>
             {caps?.supportsRaw && !front ? (
               <Pressable
                 style={[styles.rawBadge, raw && styles.rawBadgeActive]}
@@ -542,6 +660,19 @@ export default function CameraScreen() {
             <Pressable style={styles.updateBanner} onPress={() => Updates.reloadAsync()}>
               <Text style={styles.updateText}>Mise à jour prête — toucher pour l'appliquer</Text>
             </Pressable>
+          ) : null}
+
+          {showPresets ? (
+            <ScrollView style={styles.settingsPanel} contentContainerStyle={styles.settingsContent}>
+              {SCENE_PRESETS.map((p) => (
+                <Pressable key={p.id} style={styles.presetCard} onPress={() => applyPreset(p)}>
+                  <Text style={styles.presetTitle}>
+                    {p.emoji} {p.label}
+                  </Text>
+                  <Text style={styles.helpText}>{p.description}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
           ) : null}
 
           {showSettings ? (
@@ -705,7 +836,7 @@ export default function CameraScreen() {
             <View style={styles.poseBar}>
               <Segmented
                 options={POSE_DURATIONS.map(String)}
-                labels={['10 s', '30 s', '1 min', '2 min', '5 min']}
+                labels={POSE_DURATION_LABELS}
                 value={`${poseDuration}`}
                 onChange={(v) => setPoseDuration(Number(v))}
               />
@@ -771,6 +902,8 @@ export default function CameraScreen() {
           </View>
         </View>
       </SafeAreaView>
+
+      {nightVision ? <View pointerEvents="none" style={styles.nightOverlay} /> : null}
     </View>
   );
 }
@@ -1284,6 +1417,25 @@ const styles = StyleSheet.create({
   },
   poseBar: {
     gap: 6,
+  },
+  presetCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
+  },
+  presetTitle: {
+    color: '#e8e8e8',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  nightOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(170, 15, 0, 0.4)',
   },
   stopSquare: {
     width: 30,
