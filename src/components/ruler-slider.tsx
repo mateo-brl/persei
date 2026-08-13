@@ -1,62 +1,98 @@
-import { useRef } from 'react';
-import { PanResponder, StyleSheet, View } from 'react-native';
+import { memo, useEffect, useMemo } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 const TICK_SPACING = 14;
 
 interface RulerSliderProps {
-  /** Valeurs discrètes (crans) de la molette. */
+  /** Nombre de crans de la molette. */
   count: number;
   index: number;
   onChange(index: number): void;
 }
 
+const Ticks = memo(function Ticks({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => (
+        <View
+          key={i}
+          style={[
+            styles.tick,
+            i % 3 === 0 && styles.tickMajor,
+            { marginLeft: i === 0 ? 0 : TICK_SPACING - StyleSheet.hairlineWidth * 2 },
+          ]}
+        />
+      ))}
+    </>
+  );
+});
+
 /**
- * Molette-règle horizontale façon Final Cut Camera : on glisse la règle,
- * l'aiguille centrale fixe indique le cran sélectionné.
+ * Molette-règle horizontale façon Final Cut Camera. Le geste et la translation
+ * du rail restent sur le thread UI (Reanimated) ; seul le changement de cran
+ * repasse côté JS.
  */
 export function RulerSlider({ count, index, onChange }: RulerSliderProps) {
-  const startIndex = useRef(0);
-  const latest = useRef({ count, index, onChange });
-  latest.current = { count, index, onChange };
+  const offset = useSharedValue(index * TICK_SPACING);
+  const startOffset = useSharedValue(0);
+  const lastIndex = useSharedValue(index);
+  const dragging = useSharedValue(false);
 
-  const responder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        startIndex.current = latest.current.index;
-      },
-      onPanResponderMove: (_evt, gesture) => {
-        const { count, index, onChange } = latest.current;
-        const next = Math.min(
-          Math.max(Math.round(startIndex.current - gesture.dx / TICK_SPACING), 0),
-          count - 1
-        );
-        if (next !== index) onChange(next);
-      },
-    })
-  ).current;
+  useEffect(() => {
+    // Resynchronise sur ouverture/seed externe, jamais pendant un glissement.
+    if (!dragging.value) {
+      offset.value = index * TICK_SPACING;
+      lastIndex.value = index;
+    }
+  }, [index, count, offset, lastIndex, dragging]);
 
-  const ticks = Array.from({ length: count }, (_, i) => i);
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          'worklet';
+          dragging.value = true;
+          startOffset.value = offset.value;
+        })
+        .onUpdate((e) => {
+          'worklet';
+          const max = (count - 1) * TICK_SPACING;
+          const next = Math.min(Math.max(startOffset.value - e.translationX, 0), max);
+          offset.value = next;
+          const idx = Math.round(next / TICK_SPACING);
+          if (idx !== lastIndex.value) {
+            lastIndex.value = idx;
+            runOnJS(onChange)(idx);
+          }
+        })
+        .onFinalize(() => {
+          'worklet';
+          dragging.value = false;
+          offset.value = withTiming(lastIndex.value * TICK_SPACING, { duration: 80 });
+        }),
+    [count, onChange, offset, startOffset, lastIndex, dragging]
+  );
+
+  const railStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: -offset.value }],
+  }));
 
   return (
-    <View style={styles.container} {...responder.panHandlers}>
-      <View
-        style={[
-          styles.ticksRow,
-          // La règle se déplace, l'aiguille est fixe au centre.
-          { transform: [{ translateX: -index * TICK_SPACING }] },
-        ]}
-      >
-        {ticks.map((i) => (
-          <View
-            key={i}
-            style={[styles.tick, i % 3 === 0 && styles.tickMajor, { marginLeft: i === 0 ? 0 : TICK_SPACING - StyleSheet.hairlineWidth * 2 }]}
-          />
-        ))}
+    <GestureDetector gesture={pan}>
+      <View style={styles.container}>
+        <Animated.View style={[styles.ticksRow, railStyle]}>
+          <Ticks count={count} />
+        </Animated.View>
+        <View pointerEvents="none" style={styles.needle} />
       </View>
-      <View pointerEvents="none" style={styles.needle} />
-    </View>
+    </GestureDetector>
   );
 }
 

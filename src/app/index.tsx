@@ -44,6 +44,31 @@ const TORCH_STOPS = Array.from({ length: 21 }, (_, i) => i / 20);
 
 type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb' | 'tint';
 
+/** Explications pédagogiques : effet de chaque réglage sur la photo. */
+const HELP_TEXTS: Record<string, string> = {
+  iso: "Sensibilité du capteur à la lumière. Bas (25-100) : image propre mais sombre. Haut (1600+) : plus lumineux mais du grain apparaît. Étoiles : 1600-3200.",
+  shutter:
+    "Durée pendant laquelle le capteur capte la lumière. Rapide (1/500) : fige le mouvement. Lent (1/4, 1 s) : plus de lumière mais flou de bougé — trépied conseillé. Étoiles : 1 s.",
+  ev: "Correction d'exposition en mode auto : + éclaircit la photo, − l'assombrit, sans toucher aux autres réglages.",
+  focus:
+    "Mise au point manuelle : 0 = net de près (macro), ∞ = net au loin. Étoiles et paysages : ∞.",
+  wb: "Température de couleur en kelvins. Bas (2500 K) : rend l'image plus bleue/froide. Haut (8000 K) : plus chaude/orangée. Corrige la dominante de la lumière ambiante.",
+  tint: "Axe vert ↔ magenta, en complément de la température. Corrige les dominantes des néons et LED.",
+  flash: "Éclair au moment de la capture. Auto : seulement si la scène est sombre.",
+  torch:
+    "Lampe continue pendant la visée — utile pour la vidéo ou la mise au point de nuit ; intensité réglable.",
+  resolution:
+    "48 MP : détails maximum, fichiers ~4× plus lourds, idéal recadrage. 12 MP : plus léger, meilleur en basse lumière (pixels fusionnés).",
+  quality:
+    "Traitement appliqué par l'iPhone. Max : fusion multi-images (plus net, plus lent). Vitesse : capture immédiate avec traitement minimal, rendu plus naturel.",
+  bracket:
+    "Prend 3 photos d'affilée : sous-exposée, normale, sur-exposée. Base du HDR manuel : tu choisis ou fusionnes ensuite.",
+  livePhoto: "Enregistre 1,5 s de vidéo autour de la photo (sauvée en fichier vidéo séparé).",
+  depth: "Capture la carte de profondeur (utilisée pour les effets portrait en retouche).",
+  timer: "Délai avant capture — laisse le temps de stabiliser le téléphone ou de poser.",
+  grid: "Grille des tiers : place ton sujet sur les lignes ou intersections pour composer.",
+};
+
 function nearestIndex(values: number[], target: number): number {
   let best = 0;
   for (let i = 1; i < values.length; i++) {
@@ -68,7 +93,6 @@ export default function CameraScreen() {
   const [backLens, setBackLens] = useState<LensId>('wide');
   const [front, setFront] = useState(false);
   const [raw, setRaw] = useState(false);
-  const [live, setLive] = useState<ExposureUpdate | null>(null);
 
   const [exposureAuto, setExposureAuto] = useState(true);
   const [focusAuto, setFocusAuto] = useState(true);
@@ -93,13 +117,14 @@ export default function CameraScreen() {
   const [grid, setGrid] = useState(false);
 
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [thumbUri, setThumbUri] = useState<string | null>(null);
 
-  const liveRef = useRef(live);
-  liveRef.current = live;
+  // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
+  const liveRef = useRef<ExposureUpdate | null>(null);
 
   const lens: LensId = front ? 'front' : backLens;
 
@@ -131,7 +156,9 @@ export default function CameraScreen() {
   }, []);
 
   useEffect(() => {
-    const sub = PerseiCamera.addListener('onExposureUpdate', setLive);
+    const sub = PerseiCamera.addListener('onExposureUpdate', (u) => {
+      liveRef.current = u;
+    });
     return () => sub.remove();
   }, []);
 
@@ -354,52 +381,8 @@ export default function CameraScreen() {
     );
   }
 
-  const zoomLabel = live && !front ? `${(live.zoom ?? 1).toFixed(1).replace(/\.0$/, '')}×` : null;
   const backLenses = (caps?.lenses ?? []).filter((l) => l !== 'front');
   const hasFront = (caps?.lenses ?? []).includes('front');
-
-  const chips: { key: ParamKey; label: string; value: string; manual: boolean }[] = [
-    {
-      key: 'iso',
-      label: 'ISO',
-      value: exposureAuto ? `${live ? Math.round(live.iso) : '—'}` : `${isoStops[isoIdx]}`,
-      manual: !exposureAuto,
-    },
-    {
-      key: 'shutter',
-      label: 'VITESSE',
-      value: exposureAuto
-        ? formatShutter(live?.shutter ?? 0)
-        : formatShutter(shutterStops[shutterIdx]),
-      manual: !exposureAuto,
-    },
-    {
-      key: 'ev',
-      label: 'EV',
-      value: `${evStops[evIdx] > 0 ? '+' : ''}${(evStops[evIdx] ?? 0).toFixed(1)}`,
-      manual: (evStops[evIdx] ?? 0) !== 0,
-    },
-    {
-      key: 'focus',
-      label: 'FOCUS',
-      value: focusAuto ? formatFocus(live?.lensPosition ?? 1) : formatFocus(FOCUS_STOPS[focusIdx]),
-      manual: !focusAuto,
-    },
-    {
-      key: 'wb',
-      label: 'BDB',
-      value: wbAuto
-        ? `${live?.whiteBalanceKelvin ? Math.round(live.whiteBalanceKelvin) : '—'}K`
-        : `${WB_STOPS[wbIdx]}K`,
-      manual: !wbAuto,
-    },
-    {
-      key: 'tint',
-      label: 'TEINTE',
-      value: wbAuto ? 'A' : `${TINT_STOPS[tintIdx] > 0 ? '+' : ''}${TINT_STOPS[tintIdx]}`,
-      manual: !wbAuto,
-    },
-  ];
 
   const rulerFor = (param: ParamKey): { count: number; index: number } => {
     switch (param) {
@@ -464,7 +447,7 @@ export default function CameraScreen() {
                   </Text>
                 </Pressable>
               ))}
-              {zoomLabel ? <Text style={styles.zoomText}>{zoomLabel}</Text> : null}
+              <ZoomBadge />
             </View>
           ) : (
             <View style={styles.lensRow}>
@@ -505,7 +488,7 @@ export default function CameraScreen() {
           {showSettings ? (
             <ScrollView style={styles.settingsPanel} contentContainerStyle={styles.settingsContent}>
               {caps?.hasFlash ? (
-                <SettingRow label="Flash">
+                <SettingRow label="Flash" helpKey="flash">
                   <Segmented
                     options={['off', 'auto', 'on']}
                     labels={['Off', 'Auto', 'On']}
@@ -518,7 +501,7 @@ export default function CameraScreen() {
                 </SettingRow>
               ) : null}
               {caps?.hasTorch ? (
-                <SettingRow label={`Torche ${torch > 0 ? `${Math.round(torch * 100)}%` : 'off'}`}>
+                <SettingRow label={`Torche ${torch > 0 ? `${Math.round(torch * 100)}%` : 'off'}`} helpKey="torch">
                   <RulerSlider
                     count={TORCH_STOPS.length}
                     index={nearestIndex(TORCH_STOPS, torch)}
@@ -530,7 +513,7 @@ export default function CameraScreen() {
                 </SettingRow>
               ) : null}
               {caps && caps.maxMegapixels > 20 ? (
-                <SettingRow label="Résolution">
+                <SettingRow label="Résolution" helpKey="resolution">
                   <Segmented
                     options={['12', '48']}
                     labels={['12 MP', `${Math.round(caps.maxMegapixels)} MP`]}
@@ -543,7 +526,7 @@ export default function CameraScreen() {
                   />
                 </SettingRow>
               ) : null}
-              <SettingRow label="Qualité">
+              <SettingRow label="Qualité" helpKey="quality">
                 <Segmented
                   options={['speed', 'balanced', 'quality']}
                   labels={['Vitesse', 'Équilibré', 'Max']}
@@ -557,7 +540,7 @@ export default function CameraScreen() {
                 />
               </SettingRow>
               {caps && caps.maxBracketCount >= 3 ? (
-                <SettingRow label="Bracketing">
+                <SettingRow label="Bracketing" helpKey="bracket">
                   <Segmented
                     options={['0', '1', '2']}
                     labels={['Off', '±1 EV', '±2 EV']}
@@ -567,7 +550,7 @@ export default function CameraScreen() {
                 </SettingRow>
               ) : null}
               {caps?.supportsLivePhoto ? (
-                <SettingRow label="Live Photo (vidéo séparée)">
+                <SettingRow label="Live Photo (vidéo séparée)" helpKey="livePhoto">
                   <Segmented
                     options={['off', 'on']}
                     labels={['Off', 'On']}
@@ -581,7 +564,7 @@ export default function CameraScreen() {
                 </SettingRow>
               ) : null}
               {caps?.supportsDepth ? (
-                <SettingRow label="Profondeur">
+                <SettingRow label="Profondeur" helpKey="depth">
                   <Segmented
                     options={['off', 'on']}
                     labels={['Off', 'On']}
@@ -594,7 +577,7 @@ export default function CameraScreen() {
                   />
                 </SettingRow>
               ) : null}
-              <SettingRow label="Retardateur">
+              <SettingRow label="Retardateur" helpKey="timer">
                 <Segmented
                   options={['0', '3', '10']}
                   labels={['Off', '3 s', '10 s']}
@@ -602,7 +585,7 @@ export default function CameraScreen() {
                   onChange={(v) => setTimerSecs(Number(v))}
                 />
               </SettingRow>
-              <SettingRow label="Grille">
+              <SettingRow label="Grille" helpKey="grid">
                 <Segmented
                   options={['off', 'on']}
                   labels={['Off', 'On']}
@@ -613,8 +596,20 @@ export default function CameraScreen() {
             </ScrollView>
           ) : null}
 
+          {activeParam && showHelp ? (
+            <View style={styles.helpCard}>
+              <Text style={styles.helpText}>{HELP_TEXTS[activeParam]}</Text>
+            </View>
+          ) : null}
+
           {activeParam ? (
             <View style={styles.rulerPanel}>
+              <Pressable
+                style={[styles.infoButton, showHelp && styles.infoButtonActive]}
+                onPress={() => setShowHelp(!showHelp)}
+              >
+                <Text style={[styles.infoText, showHelp && styles.infoTextActive]}>i</Text>
+              </Pressable>
               <RulerSlider
                 {...rulerFor(activeParam)}
                 onChange={(i) => onRulerChange(activeParam, i)}
@@ -630,20 +625,19 @@ export default function CameraScreen() {
             </View>
           ) : null}
 
-          <View style={styles.chipsRow}>
-            {chips.map((chip) => (
-              <Pressable
-                key={chip.key}
-                style={[styles.chip, activeParam === chip.key && styles.chipActive]}
-                onPress={() => openParam(chip.key)}
-              >
-                <Text style={styles.chipLabel}>{chip.label}</Text>
-                <Text style={[styles.chipValue, chip.manual && styles.chipValueManual]}>
-                  {chip.manual ? chip.value : `A ${chip.value}`}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          <ChipsRow
+            activeParam={activeParam}
+            openParam={openParam}
+            exposureAuto={exposureAuto}
+            focusAuto={focusAuto}
+            wbAuto={wbAuto}
+            isoValue={isoStops[isoIdx]}
+            shutterValue={shutterStops[shutterIdx]}
+            evValue={evStops[evIdx] ?? 0}
+            focusValue={FOCUS_STOPS[focusIdx]}
+            wbValue={WB_STOPS[wbIdx]}
+            tintValue={TINT_STOPS[tintIdx]}
+          />
 
           <View style={styles.shutterRow}>
             <View style={styles.thumbBox}>
@@ -672,11 +666,133 @@ export default function CameraScreen() {
   );
 }
 
-function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
+function SettingRow({
+  label,
+  helpKey,
+  children,
+}: {
+  label: string;
+  helpKey?: string;
+  children: React.ReactNode;
+}) {
+  const [showHelp, setShowHelp] = useState(false);
   return (
     <View style={styles.settingRow}>
-      <Text style={styles.settingLabel}>{label}</Text>
+      <View style={styles.settingHeader}>
+        <Text style={styles.settingLabel}>{label}</Text>
+        {helpKey ? (
+          <Pressable
+            style={[styles.infoButtonSmall, showHelp && styles.infoButtonActive]}
+            onPress={() => setShowHelp(!showHelp)}
+          >
+            <Text style={[styles.infoText, showHelp && styles.infoTextActive]}>i</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {helpKey && showHelp ? <Text style={styles.helpText}>{HELP_TEXTS[helpKey]}</Text> : null}
       <View style={styles.settingControl}>{children}</View>
+    </View>
+  );
+}
+
+/** Zoom courant, abonné seul à la lecture capteur (évite de re-rendre l'écran). */
+function ZoomBadge() {
+  const [zoom, setZoom] = useState<number | null>(null);
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onExposureUpdate', (u) => setZoom(u.zoom));
+    return () => sub.remove();
+  }, []);
+  if (zoom == null) return null;
+  return <Text style={styles.zoomText}>{`${zoom.toFixed(1).replace(/\.0$/, '')}×`}</Text>;
+}
+
+/** Bandeau de valeurs : seul composant re-rendu à 10 Hz par la lecture capteur. */
+function ChipsRow({
+  activeParam,
+  openParam,
+  exposureAuto,
+  focusAuto,
+  wbAuto,
+  isoValue,
+  shutterValue,
+  evValue,
+  focusValue,
+  wbValue,
+  tintValue,
+}: {
+  activeParam: ParamKey | null;
+  openParam(param: ParamKey): void;
+  exposureAuto: boolean;
+  focusAuto: boolean;
+  wbAuto: boolean;
+  isoValue: number;
+  shutterValue: number;
+  evValue: number;
+  focusValue: number;
+  wbValue: number;
+  tintValue: number;
+}) {
+  const [live, setLive] = useState<ExposureUpdate | null>(null);
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onExposureUpdate', setLive);
+    return () => sub.remove();
+  }, []);
+
+  const chips: { key: ParamKey; label: string; value: string; manual: boolean }[] = [
+    {
+      key: 'iso',
+      label: 'ISO',
+      value: exposureAuto ? `${live ? Math.round(live.iso) : '—'}` : `${isoValue}`,
+      manual: !exposureAuto,
+    },
+    {
+      key: 'shutter',
+      label: 'VITESSE',
+      value: exposureAuto ? formatShutter(live?.shutter ?? 0) : formatShutter(shutterValue),
+      manual: !exposureAuto,
+    },
+    {
+      key: 'ev',
+      label: 'EV',
+      value: `${evValue > 0 ? '+' : ''}${evValue.toFixed(1)}`,
+      manual: evValue !== 0,
+    },
+    {
+      key: 'focus',
+      label: 'FOCUS',
+      value: focusAuto ? formatFocus(live?.lensPosition ?? 1) : formatFocus(focusValue),
+      manual: !focusAuto,
+    },
+    {
+      key: 'wb',
+      label: 'BDB',
+      value: wbAuto
+        ? `${live?.whiteBalanceKelvin ? Math.round(live.whiteBalanceKelvin) : '—'}K`
+        : `${wbValue}K`,
+      manual: !wbAuto,
+    },
+    {
+      key: 'tint',
+      label: 'TEINTE',
+      value: wbAuto ? 'A' : `${tintValue > 0 ? '+' : ''}${tintValue}`,
+      manual: !wbAuto,
+    },
+  ];
+
+  return (
+    <View style={styles.chipsRow}>
+      {chips.map((chip) => (
+        <Pressable
+          key={chip.key}
+          style={[styles.chip, activeParam === chip.key && styles.chipActive]}
+          onPress={() => openParam(chip.key)}
+        >
+          <Text style={styles.chipLabel}>{chip.label}</Text>
+          <Text style={[styles.chipValue, chip.manual && styles.chipValueManual]}>
+            {chip.manual ? chip.value : `A ${chip.value}`}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -878,6 +994,52 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 4,
+  },
+  helpCard: {
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderLeftWidth: 2,
+    borderLeftColor: ACCENT,
+  },
+  helpText: {
+    color: '#d8d8d8',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  infoButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  infoButtonSmall: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  infoButtonActive: {
+    backgroundColor: ACCENT,
+  },
+  infoText: {
+    color: '#e8e8e8',
+    fontSize: 12,
+    fontWeight: '700',
+    fontStyle: 'italic',
+  },
+  infoTextActive: {
+    color: '#000',
+  },
+  settingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   autoButton: {
     paddingHorizontal: 12,
