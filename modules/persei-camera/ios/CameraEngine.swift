@@ -175,12 +175,31 @@ final class CameraEngine: NSObject {
       "lenses": lenses,
       "minZoom": Double(device.minAvailableVideoZoomFactor),
       "maxZoom": Double(device.maxAvailableVideoZoomFactor),
+      "telephotoFactor": telephotoZoomFactor(),
       "hasFlash": device.hasFlash,
       "hasTorch": device.hasTorch,
       "supportsLivePhoto": photoOutput.isLivePhotoCaptureSupported,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
       "maxBracketCount": Int(photoOutput.maxBracketedCapturePhotoCount),
     ]
+  }
+
+  /// Facteur de zoom réel du téléobjectif par rapport au grand-angle (5 sur
+  /// 16 Pro, 3 sur 15 Pro, 0 si pas de télé), lu sur le device virtuel.
+  private func telephotoZoomFactor() -> Double {
+    if let triple = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) {
+      let factors = triple.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
+      if factors.count >= 2, factors[0] > 0 {
+        return factors[1] / factors[0]
+      }
+    }
+    if let dual = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
+      let factors = dual.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
+      if let last = factors.last, last > 0 {
+        return last
+      }
+    }
+    return 0
   }
 
   // MARK: - Live readout

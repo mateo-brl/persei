@@ -17,6 +17,8 @@ export interface CameraCapabilities {
   supportsProRaw: boolean;
   maxMegapixels: number;
   lenses: LensId[];
+  /** Facteur de zoom réel du téléobjectif vs grand-angle (5 sur 16 Pro), 0 si absent. */
+  telephotoFactor: number;
   minZoom: number;
   maxZoom: number;
   hasFlash: boolean;

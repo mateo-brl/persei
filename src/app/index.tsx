@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library/legacy';
+import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -19,11 +20,17 @@ import { RulerSlider } from '../components/ruler-slider';
 
 const ACCENT = '#ffb800';
 
-const BACK_LENS_LABELS: Partial<Record<LensId, string>> = {
-  ultraWide: '0,5×',
-  wide: '1×',
-  telephoto: '3×',
-};
+function lensLabel(id: LensId, telephotoFactor: number): string {
+  if (id === 'ultraWide') return '0,5×';
+  if (id === 'wide') return '1×';
+  if (id === 'telephoto') {
+    if (telephotoFactor > 0) {
+      return `${(Math.round(telephotoFactor * 10) / 10).toString().replace('.', ',')}×`;
+    }
+    return 'Télé';
+  }
+  return id;
+}
 
 const ISO_BASE = [
   25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
@@ -118,6 +125,7 @@ export default function CameraScreen() {
 
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
@@ -167,6 +175,22 @@ export default function CameraScreen() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Vérifie et télécharge les mises à jour OTA, puis propose de les appliquer.
+  useEffect(() => {
+    if (__DEV__) return;
+    (async () => {
+      try {
+        const result = await Updates.checkForUpdateAsync();
+        if (result.isAvailable) {
+          await Updates.fetchUpdateAsync();
+          setUpdateReady(true);
+        }
+      } catch {
+        // Hors ligne ou serveur indisponible : on réessaiera au prochain lancement.
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (permission !== 'granted') return;
@@ -443,7 +467,7 @@ export default function CameraScreen() {
                   onPress={() => setBackLens(id)}
                 >
                   <Text style={[styles.lensText, backLens === id && styles.lensTextActive]}>
-                    {BACK_LENS_LABELS[id] ?? id}
+                    {lensLabel(id, caps?.telephotoFactor ?? 0)}
                   </Text>
                 </Pressable>
               ))}
@@ -483,6 +507,12 @@ export default function CameraScreen() {
                 {toast}
               </Text>
             </View>
+          ) : null}
+
+          {updateReady ? (
+            <Pressable style={styles.updateBanner} onPress={() => Updates.reloadAsync()}>
+              <Text style={styles.updateText}>Mise à jour prête — toucher pour l'appliquer</Text>
+            </Pressable>
           ) : null}
 
           {showSettings ? (
@@ -942,6 +972,18 @@ const styles = StyleSheet.create({
     color: '#ffd60a',
     fontSize: 12,
     textAlign: 'center',
+  },
+  updateBanner: {
+    alignSelf: 'center',
+    backgroundColor: ACCENT,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  updateText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: '700',
   },
   settingsPanel: {
     maxHeight: 300,
