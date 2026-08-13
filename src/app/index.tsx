@@ -19,6 +19,8 @@ import {
   StackMode,
   ZoomPreset,
 } from '../../modules/persei-camera';
+import { Histogram } from '../components/histogram';
+import { LevelIndicator } from '../components/level-indicator';
 import { RulerSlider } from '../components/ruler-slider';
 
 const ACCENT = '#ffb800';
@@ -146,6 +148,18 @@ const HELP_TEXTS: Record<string, string> = {
   grid: "Grille des tiers : place ton sujet sur les lignes ou intersections pour composer.",
   nightVision:
     "Teinte toute l'interface en rouge sombre : tes yeux gardent leur adaptation à l'obscurité (qui prend 20-30 min à revenir après un écran blanc). Indispensable en astro.",
+  peaking:
+    "Focus peaking : surligne en vert ce qui est net dans l'image. Le moyen le plus fiable de faire une mise au point manuelle précise, surtout de nuit.",
+  zebras:
+    "Zebras : marque en rouge les zones surexposées (au-delà de ~98 %). Si une zone importante zèbre, baisse l'ISO ou la vitesse.",
+  histogram:
+    "Histogramme : répartition des luminosités, des ombres (gauche) aux hautes lumières (droite). Collé à droite = surexposition, collé à gauche = sous-exposition.",
+  level:
+    "Niveau à bulle : la ligne suit l'inclinaison du téléphone et devient verte quand l'horizon est droit (±1°).",
+  align:
+    "Alignement main levée : recale chaque trame sur la première avant l'empilement (translation). Permet une pose sans trépied — reste le plus stable possible.",
+  meteorFilter:
+    "Filtre météores : seules les trames où quelque chose bouge (météore, avion, satellite) nourrissent la fusion max — traînées nettes sur un fond plus propre.",
 };
 
 function nearestIndex(values: number[], target: number): number {
@@ -204,6 +218,12 @@ export default function CameraScreen() {
   const [updateReady, setUpdateReady] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [nightVision, setNightVision] = useState(false);
+  const [peaking, setPeaking] = useState(false);
+  const [zebras, setZebras] = useState(false);
+  const [histogramOn, setHistogramOn] = useState(false);
+  const [levelOn, setLevelOn] = useState(false);
+  const [poseAlign, setPoseAlign] = useState(false);
+  const [poseMeteor, setPoseMeteor] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
@@ -258,6 +278,15 @@ export default function CameraScreen() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Aides de visée natives + loupe automatique pendant le réglage du focus.
+  useEffect(() => {
+    PerseiCamera.setAssistOptions(peaking, zebras, histogramOn).catch(() => {});
+  }, [peaking, zebras, histogramOn, caps]);
+
+  useEffect(() => {
+    PerseiCamera.setLoupeEnabled(activeParam === 'focus').catch(() => {});
+  }, [activeParam]);
 
   // Vérifie et télécharge les mises à jour OTA, puis propose de les appliquer.
   useEffect(() => {
@@ -465,7 +494,13 @@ export default function CameraScreen() {
       }
       // ISO de pose : la valeur manuelle si définie, sinon 1600 (ciel étoilé).
       const iso = exposureAuto ? 1600 : isoStops[isoIdx];
-      const uris = await PerseiCamera.startLongExposure(poseDuration, iso, poseStyle);
+      const uris = await PerseiCamera.startLongExposure(
+        poseDuration,
+        iso,
+        poseStyle,
+        poseAlign,
+        poseMeteor && poseStyle !== 'mean'
+      );
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
       if (uris[0]) setThumbUri(uris[0]);
       setToast('Pose enregistrée ✓');
@@ -490,6 +525,8 @@ export default function CameraScreen() {
     applyManualExposure,
     poseDuration,
     poseStyle,
+    poseAlign,
+    poseMeteor,
   ]);
   const pinch = useMemo(
     () =>
@@ -544,6 +581,27 @@ export default function CameraScreen() {
     }, 1000);
   }, [timerSecs, shoot]);
 
+  const triggerShutter = useCallback(() => {
+    if (capturing || countdown > 0 || !caps) return;
+    if (captureMode === 'pose' && !front) {
+      if (posing) {
+        PerseiCamera.cancelLongExposure().catch(() => {});
+      } else {
+        startPose();
+      }
+    } else {
+      capture();
+    }
+  }, [capturing, countdown, caps, captureMode, front, posing, startPose, capture]);
+
+  // Boutons volume / Camera Control = déclencheur physique.
+  const shutterRef = useRef(triggerShutter);
+  shutterRef.current = triggerShutter;
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onShutterButton', () => shutterRef.current());
+    return () => sub.remove();
+  }, []);
+
   if (permission === 'denied') {
     return (
       <SafeAreaView style={styles.centered}>
@@ -595,6 +653,14 @@ export default function CameraScreen() {
           <View style={[styles.gridLine, { left: '66.66%', width: 1, height: '100%' }]} />
           <View style={[styles.gridLine, { top: '33.33%', height: 1, width: '100%' }]} />
           <View style={[styles.gridLine, { top: '66.66%', height: 1, width: '100%' }]} />
+        </View>
+      ) : null}
+
+      {levelOn ? <LevelIndicator /> : null}
+
+      {histogramOn ? (
+        <View pointerEvents="none" style={styles.histogramBox}>
+          <Histogram />
         </View>
       ) : null}
 
@@ -783,6 +849,38 @@ export default function CameraScreen() {
                   onChange={(v) => setGrid(v === 'on')}
                 />
               </SettingRow>
+              <SettingRow label="Focus peaking" helpKey="peaking">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={peaking ? 'on' : 'off'}
+                  onChange={(v) => setPeaking(v === 'on')}
+                />
+              </SettingRow>
+              <SettingRow label="Zebras (surexposition)" helpKey="zebras">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={zebras ? 'on' : 'off'}
+                  onChange={(v) => setZebras(v === 'on')}
+                />
+              </SettingRow>
+              <SettingRow label="Histogramme" helpKey="histogram">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={histogramOn ? 'on' : 'off'}
+                  onChange={(v) => setHistogramOn(v === 'on')}
+                />
+              </SettingRow>
+              <SettingRow label="Niveau à bulle" helpKey="level">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={levelOn ? 'on' : 'off'}
+                  onChange={(v) => setLevelOn(v === 'on')}
+                />
+              </SettingRow>
             </ScrollView>
           ) : null}
 
@@ -846,6 +944,24 @@ export default function CameraScreen() {
                 value={poseStyle}
                 onChange={(v) => setPoseStyle(v as StackMode)}
               />
+              <SettingRow label="Main levée (alignement)" helpKey="align">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={poseAlign ? 'on' : 'off'}
+                  onChange={(v) => setPoseAlign(v === 'on')}
+                />
+              </SettingRow>
+              {poseStyle !== 'mean' ? (
+                <SettingRow label="Filtre météores" helpKey="meteorFilter">
+                  <Segmented
+                    options={['off', 'on']}
+                    labels={['Off', 'On']}
+                    value={poseMeteor ? 'on' : 'off'}
+                    onChange={(v) => setPoseMeteor(v === 'on')}
+                  />
+                </SettingRow>
+              ) : null}
             </View>
           ) : null}
 
@@ -871,17 +987,7 @@ export default function CameraScreen() {
             </View>
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
-              onPress={() => {
-                if (captureMode === 'pose' && !front) {
-                  if (posing) {
-                    PerseiCamera.cancelLongExposure().catch(() => {});
-                  } else {
-                    startPose();
-                  }
-                } else {
-                  capture();
-                }
-              }}
+              onPress={triggerShutter}
               disabled={capturing || countdown > 0 || !caps}
             >
               {posing ? (
@@ -1428,6 +1534,11 @@ const styles = StyleSheet.create({
     color: '#e8e8e8',
     fontSize: 14,
     fontWeight: '700',
+  },
+  histogramBox: {
+    position: 'absolute',
+    top: 110,
+    left: 12,
   },
   nightOverlay: {
     position: 'absolute',

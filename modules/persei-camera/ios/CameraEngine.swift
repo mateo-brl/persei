@@ -32,6 +32,29 @@ final class CameraEngine: NSObject {
   // Keeps capture delegates alive until their capture completes.
   private var inFlightCaptures: [Int64: PhotoCaptureDelegate] = [:]
 
+  // Aides de visée (histogramme, peaking, zebras, loupe).
+  let processor = FrameProcessor()
+  private let videoDataOutput = AVCaptureVideoDataOutput()
+  private let processingQueue = DispatchQueue(label: "app.persei.camera.processing")
+  weak var assistView: PerseiCameraView?
+  /// Histogramme 64 bins vers JS (~5 Hz quand activé).
+  var onHistogram: (([Double]) -> Void)?
+  /// Pression du bouton volume / Camera Control.
+  var onCaptureButton: (() -> Void)?
+
+  override init() {
+    super.init()
+    processor.onOverlayImage = { [weak self] image in
+      DispatchQueue.main.async { self?.assistView?.setAssistOverlay(image) }
+    }
+    processor.onLoupeImage = { [weak self] image in
+      DispatchQueue.main.async { self?.assistView?.setLoupe(image) }
+    }
+    processor.onHistogram = { [weak self] bins in
+      self?.onHistogram?(bins)
+    }
+  }
+
   // Préférences de capture (appliquées à chaque photo).
   private var flashMode: AVCaptureDevice.FlashMode = .off
   private var preferHighResolution = true
@@ -131,6 +154,27 @@ final class CameraEngine: NSObject {
       }
       if photoOutput.isFastCapturePrioritizationSupported {
         photoOutput.isFastCapturePrioritizationEnabled = true
+      }
+    }
+
+    if !session.outputs.contains(videoDataOutput) {
+      videoDataOutput.videoSettings = [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+      ]
+      videoDataOutput.alwaysDiscardsLateVideoFrames = true
+      videoDataOutput.setSampleBufferDelegate(processor, queue: processingQueue)
+      if session.canAddOutput(videoDataOutput) {
+        session.addOutput(videoDataOutput)
+      }
+    }
+    // Frames en portrait pour que les calques d'aide collent à la préview.
+    if let connection = videoDataOutput.connection(with: .video) {
+      if #available(iOS 17.0, *) {
+        if connection.isVideoRotationAngleSupported(90) {
+          connection.videoRotationAngle = 90
+        }
+      } else if connection.isVideoOrientationSupported {
+        connection.videoOrientation = .portrait
       }
     }
 
@@ -434,6 +478,22 @@ final class CameraEngine: NSObject {
     }
   }
 
+  // MARK: - Aides de visée
+
+  func setAssistOptions(peaking: Bool, zebras: Bool, histogram: Bool) {
+    processingQueue.async {
+      self.processor.peakingEnabled = peaking
+      self.processor.zebrasEnabled = zebras
+      self.processor.histogramEnabled = histogram
+    }
+  }
+
+  func setLoupeEnabled(_ enabled: Bool) {
+    processingQueue.async {
+      self.processor.loupeEnabled = enabled
+    }
+  }
+
   // MARK: - Pose longue (empilement)
 
   /// Progression de la pose ({frame, total}), poussée vers JS.
@@ -452,6 +512,8 @@ final class CameraEngine: NSObject {
     seconds: Double,
     iso: Double,
     mode: String,
+    align: Bool,
+    meteorFilter: Bool,
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
     sessionQueue.async {
@@ -478,7 +540,7 @@ final class CameraEngine: NSObject {
       }
 
       let totalFrames = max(2, Int((seconds / frameDuration).rounded()))
-      let stacker = FrameStacker(mode: mode)
+      let stacker = FrameStacker(mode: mode, align: align, meteorFilter: meteorFilter)
       self.captureStackFrame(remaining: totalFrames, total: totalFrames, stacker: stacker, completion: completion)
     }
   }

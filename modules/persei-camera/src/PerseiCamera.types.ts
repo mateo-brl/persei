@@ -60,4 +60,8 @@ export interface LongExposureProgress {
 export type PerseiCameraEvents = {
   onExposureUpdate(update: ExposureUpdate): void;
   onLongExposureProgress(progress: LongExposureProgress): void;
+  /** Histogramme de luminance 64 bins (0-255), ~5 Hz quand activé. */
+  onHistogram(payload: { bins: number[] }): void;
+  /** Pression du bouton volume ou Camera Control. */
+  onShutterButton(): void;
 };
