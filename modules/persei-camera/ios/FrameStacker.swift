@@ -104,11 +104,13 @@ final class FrameStacker {
   /// entre la trame et la moyenne courante au-dessus d'un seuil.
   private func containsTransient(frame: CIImage, sum: CIImage, count: Int) -> Bool {
     let scale = CGFloat(1) / CGFloat(count)
+    // Alpha divisé comme les couleurs (espace prémultiplié), sinon la
+    // comparaison avec la trame se fait sur des échelles différentes.
     let mean = sum.applyingFilter("CIColorMatrix", parameters: [
       "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
       "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
       "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
-      "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+      "inputAVector": CIVector(x: 0, y: 0, z: 0, w: scale),
     ])
     let difference = frame.applyingFilter(
       "CIDifferenceBlendMode",
@@ -145,11 +147,15 @@ final class FrameStacker {
 
     if let accumulator = sumAccumulator, sumFrameCount > 0 {
       let scale = CGFloat(1) / CGFloat(sumFrameCount)
+      // Core Image est prémultiplié : la somme a aussi additionné l'alpha
+      // (alpha = N). Il faut diviser l'alpha comme les couleurs, sinon la
+      // dé-prémultiplication à l'écriture redivise les couleurs par N et
+      // sort une image noire.
       let mean = accumulator.image().applyingFilter("CIColorMatrix", parameters: [
         "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
         "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
         "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
-        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: scale),
       ])
       // La moyenne réduit le bruit mais n'éclaircit pas : étirement
       // automatique de l'exposition pour les scènes sombres (nuit), neutre
