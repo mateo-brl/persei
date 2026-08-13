@@ -38,11 +38,22 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   setDepthEnabled(enabled: boolean): Promise<void>;
   /** Capture ; renvoie les URIs produits (HEIC, DNG si raw, MOV si Live Photo). */
   capturePhoto(options: CaptureOptions): Promise<string[]>;
+  /** Aides de visée : focus peaking, zebras, histogramme (événement onHistogram). */
+  setAssistOptions(peaking: boolean, zebras: boolean, histogram: boolean): Promise<void>;
+  /** Loupe de mise au point (recadrage central grossi, calque natif). */
+  setLoupeEnabled(enabled: boolean): Promise<void>;
   /**
    * Pose longue par empilement (durée libre, pas de plafond) : trames de ~1 s
-   * fusionnées en moyenne et/ou en max. Progression via onLongExposureProgress.
+   * fusionnées en moyenne et/ou en max. `align` recale les trames (main levée),
+   * `meteorFilter` ne fusionne en max que les trames contenant un transitoire.
    */
-  startLongExposure(seconds: number, iso: number, mode: StackMode): Promise<string[]>;
+  startLongExposure(
+    seconds: number,
+    iso: number,
+    mode: StackMode,
+    align: boolean,
+    meteorFilter: boolean
+  ): Promise<string[]>;
   cancelLongExposure(): Promise<void>;
 }
 

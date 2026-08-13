@@ -11,7 +11,7 @@ public class PerseiCameraModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PerseiCamera")
 
-    Events("onExposureUpdate", "onLongExposureProgress")
+    Events("onExposureUpdate", "onLongExposureProgress", "onHistogram", "onShutterButton")
 
     OnStartObserving {
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
@@ -20,11 +20,19 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onLongExposureProgress = { [weak self] payload in
         self?.sendEvent("onLongExposureProgress", payload)
       }
+      CameraEngine.shared.onHistogram = { [weak self] bins in
+        self?.sendEvent("onHistogram", ["bins": bins])
+      }
+      CameraEngine.shared.onCaptureButton = { [weak self] in
+        self?.sendEvent("onShutterButton", [:])
+      }
     }
 
     OnStopObserving {
       CameraEngine.shared.onExposureUpdate = nil
       CameraEngine.shared.onLongExposureProgress = nil
+      CameraEngine.shared.onHistogram = nil
+      CameraEngine.shared.onCaptureButton = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -106,8 +114,16 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.setDepthEnabled(enabled)
     }
 
-    AsyncFunction("startLongExposure") { (seconds: Double, iso: Double, mode: String, promise: Promise) in
-      CameraEngine.shared.startLongExposure(seconds: seconds, iso: iso, mode: mode) { result in
+    AsyncFunction("setAssistOptions") { (peaking: Bool, zebras: Bool, histogram: Bool) in
+      CameraEngine.shared.setAssistOptions(peaking: peaking, zebras: zebras, histogram: histogram)
+    }
+
+    AsyncFunction("setLoupeEnabled") { (enabled: Bool) in
+      CameraEngine.shared.setLoupeEnabled(enabled)
+    }
+
+    AsyncFunction("startLongExposure") { (seconds: Double, iso: Double, mode: String, align: Bool, meteorFilter: Bool, promise: Promise) in
+      CameraEngine.shared.startLongExposure(seconds: seconds, iso: iso, mode: mode, align: align, meteorFilter: meteorFilter) { result in
         switch result {
         case .success(let uris):
           promise.resolve(uris)
