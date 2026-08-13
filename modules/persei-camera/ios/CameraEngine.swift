@@ -316,14 +316,36 @@ final class CameraEngine: NSObject {
     try result.get()
   }
 
+  /// Bornes d'exposition sûres. Sur un device virtuel, les limites du format
+  /// virtuel peuvent dépasser celles de la caméra physique active (l'ultra
+  /// grand-angle plafonne bien plus bas que la principale) : dépasser ces
+  /// bornes fait lever une NSException par AVFoundation. On prend donc
+  /// l'intersection des deux formats.
+  private func exposureBounds(of device: AVCaptureDevice) -> (
+    minIso: Float, maxIso: Float, minSeconds: Double, maxSeconds: Double
+  ) {
+    var minIso = device.activeFormat.minISO
+    var maxIso = device.activeFormat.maxISO
+    var minSeconds = device.activeFormat.minExposureDuration.seconds
+    var maxSeconds = device.activeFormat.maxExposureDuration.seconds
+    if !device.constituentDevices.isEmpty, let active = device.activePrimaryConstituentDevice {
+      let format = active.activeFormat
+      minIso = max(minIso, format.minISO)
+      maxIso = min(maxIso, format.maxISO)
+      minSeconds = max(minSeconds, format.minExposureDuration.seconds)
+      maxSeconds = min(maxSeconds, format.maxExposureDuration.seconds)
+    }
+    if minIso > maxIso { (minIso, maxIso) = (maxIso, maxIso) }
+    if minSeconds > maxSeconds { minSeconds = maxSeconds }
+    return (minIso, maxIso, minSeconds, maxSeconds)
+  }
+
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
     try withLockedDevice { device in
-      let format = device.activeFormat
-      let clampedIso = min(max(Float(iso), format.minISO), format.maxISO)
-      let clampedSeconds = min(
-        max(shutterSeconds, format.minExposureDuration.seconds),
-        format.maxExposureDuration.seconds
-      )
+      guard device.isExposureModeSupported(.custom) else { return }
+      let bounds = self.exposureBounds(of: device)
+      let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
+      let clampedSeconds = min(max(shutterSeconds, bounds.minSeconds), bounds.maxSeconds)
       let duration = CMTime(seconds: clampedSeconds, preferredTimescale: 1_000_000_000)
       device.setExposureModeCustom(duration: duration, iso: clampedIso, completionHandler: nil)
     }
@@ -524,19 +546,22 @@ final class CameraEngine: NSObject {
       self.stackCancelled = false
       self.stackFramesDone = 0
 
-      let frameDuration = min(1.0, device.activeFormat.maxExposureDuration.seconds)
-      do {
-        try device.lockForConfiguration()
-        let clampedIso = min(max(Float(iso), device.activeFormat.minISO), device.activeFormat.maxISO)
-        device.setExposureModeCustom(
-          duration: CMTime(seconds: frameDuration, preferredTimescale: 1_000_000_000),
-          iso: clampedIso,
-          completionHandler: nil
-        )
-        device.unlockForConfiguration()
-      } catch {
-        completion(.failure(error))
-        return
+      let bounds = self.exposureBounds(of: device)
+      let frameDuration = min(1.0, bounds.maxSeconds)
+      if device.isExposureModeSupported(.custom) {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
+          device.setExposureModeCustom(
+            duration: CMTime(seconds: frameDuration, preferredTimescale: 1_000_000_000),
+            iso: clampedIso,
+            completionHandler: nil
+          )
+        } catch {
+          completion(.failure(error))
+          return
+        }
       }
 
       let totalFrames = max(2, Int((seconds / frameDuration).rounded()))
