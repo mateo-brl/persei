@@ -948,6 +948,9 @@ export default function CameraScreen() {
             <View style={styles.toast}>
               <Text style={styles.toastText}>
                 {`Pose en cours (${poseProgress ? `${poseProgress.frame}/${poseProgress.total} s` : 'préparation'}). Ne bouge pas le téléphone.`}
+                {liveRef.current
+                  ? `\nCapteur : ISO ${Math.round(liveRef.current.iso)} · ${formatShutter(liveRef.current.shutter)}`
+                  : ''}
               </Text>
             </View>
           ) : null}

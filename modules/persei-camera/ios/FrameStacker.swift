@@ -151,13 +151,16 @@ final class FrameStacker {
         "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
         "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
       ])
-      if let uri = write(image: mean, suffix: "lueur", colorSpace: colorSpace) {
+      // La moyenne réduit le bruit mais n'éclaircit pas : étirement
+      // automatique de l'exposition pour les scènes sombres (nuit), neutre
+      // sur les scènes déjà exposées.
+      if let uri = write(image: autoStretch(mean), suffix: "lueur", colorSpace: colorSpace) {
         uris.append(uri)
       }
     }
 
     if let accumulator = maxAccumulator {
-      if let uri = write(image: accumulator.image(), suffix: "etoiles", colorSpace: colorSpace) {
+      if let uri = write(image: autoStretch(accumulator.image()), suffix: "etoiles", colorSpace: colorSpace) {
         uris.append(uri)
       }
     }
@@ -165,6 +168,34 @@ final class FrameStacker {
     return uris.isEmpty
       ? .failure(CameraEngineError.captureFailed("P32: stack rendering failed"))
       : .success(uris)
+  }
+
+  /// Mesure le pic de luminosité de l'image ; si la scène est sombre, remonte
+  /// l'exposition (jusqu'à +4 EV) pour révéler ce qui a été accumulé.
+  private func autoStretch(_ image: CIImage) -> CIImage {
+    guard let peakImage = CIFilter(
+      name: "CIAreaMaximum",
+      parameters: [
+        kCIInputImageKey: image,
+        kCIInputExtentKey: CIVector(cgRect: image.extent),
+      ]
+    )?.outputImage else { return image }
+
+    var pixel = [UInt8](repeating: 0, count: 4)
+    ciContext.render(
+      peakImage,
+      toBitmap: &pixel,
+      rowBytes: 4,
+      bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+      format: .RGBA8,
+      colorSpace: nil
+    )
+    let peak = Double(max(pixel[0], pixel[1], pixel[2])) / 255.0
+    guard peak > 0.001, peak < 0.65 else { return image }
+
+    let ev = min(4.0, log2(0.85 / peak))
+    guard ev > 0.2 else { return image }
+    return image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
   }
 
   private func write(image: CIImage, suffix: String, colorSpace: CGColorSpace) -> String? {
