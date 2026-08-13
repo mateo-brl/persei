@@ -307,6 +307,100 @@ final class CameraEngine: NSObject {
 
   // MARK: - Manual controls
 
+  // MARK: - Bascule virtuel ↔ physique pour l'exposition manuelle
+
+  /// Le device virtuel (zoom continu, bascule auto) ne supporte pas le mode
+  /// d'exposition .custom : toute exposition manuelle ou pose longue doit se
+  /// faire sur la caméra physique correspondant au zoom courant, puis on
+  /// revient au virtuel en mode auto.
+  private var savedVirtualZoom: CGFloat?
+
+  /// Caméra physique + zoom équivalent pour le facteur courant du virtuel.
+  private func physicalConstituent(
+    of virtual: AVCaptureDevice,
+    at zoom: CGFloat
+  ) -> (device: AVCaptureDevice, zoom: CGFloat) {
+    let constituents = virtual.constituentDevices
+    let switchOvers = virtual.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+    let ultraWide = constituents.first { $0.deviceType == .builtInUltraWideCamera }
+    let wide = constituents.first { $0.deviceType == .builtInWideAngleCamera } ?? virtual
+    let telephoto = constituents.first { $0.deviceType == .builtInTelephotoCamera }
+
+    if let ultraWide, let firstSwitch = switchOvers.first, zoom < firstSwitch {
+      return (ultraWide, zoom)
+    }
+    if let telephoto, switchOvers.count >= 2, zoom >= switchOvers[1] {
+      return (telephoto, zoom / switchOvers[1])
+    }
+    let wideBase = ultraWide != nil ? (switchOvers.first ?? 2) : 1
+    return (wide, max(1, zoom / wideBase))
+  }
+
+  /// À appeler sur la sessionQueue. Remplace l'input par la caméra physique
+  /// équivalente si l'input courant est le device virtuel.
+  private func ensurePhysicalForManualLocked() {
+    guard let current = device, !current.constituentDevices.isEmpty else { return }
+    let currentZoom = current.videoZoomFactor
+    savedVirtualZoom = currentZoom
+    let target = physicalConstituent(of: current, at: currentZoom)
+    switchInputLocked(to: target.device, zoom: target.zoom)
+  }
+
+  /// À appeler sur la sessionQueue. Restaure le device virtuel et son zoom.
+  private func restoreVirtualLocked() {
+    guard let current = device, current.constituentDevices.isEmpty,
+          current.position == .back,
+          let virtualDevice = resolveDevice(lens: "back"),
+          !virtualDevice.constituentDevices.isEmpty
+    else { return }
+    switchInputLocked(to: virtualDevice, zoom: savedVirtualZoom ?? 2.0)
+    savedVirtualZoom = nil
+  }
+
+  private func switchInputLocked(to newDevice: AVCaptureDevice, zoom: CGFloat) {
+    session.beginConfiguration()
+    let previousInput = videoInput
+    if let previousInput {
+      session.removeInput(previousInput)
+      videoInput = nil
+    }
+    if let input = try? AVCaptureDeviceInput(device: newDevice), session.canAddInput(input) {
+      session.addInput(input)
+      videoInput = input
+      device = newDevice
+      applyResolutionPreference(for: newDevice)
+    } else if let previousInput, session.canAddInput(previousInput) {
+      // Bascule refusée : on remet l'ancien input, jamais de session sans entrée.
+      session.addInput(previousInput)
+      videoInput = previousInput
+    }
+    // La connexion vidéo est recréée avec l'input : réappliquer le portrait.
+    if let connection = videoDataOutput.connection(with: .video) {
+      if #available(iOS 17.0, *) {
+        if connection.isVideoRotationAngleSupported(90) {
+          connection.videoRotationAngle = 90
+        }
+      } else if connection.isVideoOrientationSupported {
+        connection.videoOrientation = .portrait
+      }
+    }
+    session.commitConfiguration()
+
+    guard let device else { return }
+    startObserving(device)
+    let clampedZoom = min(
+      max(zoom, device.minAvailableVideoZoomFactor),
+      device.maxAvailableVideoZoomFactor
+    )
+    if abs(clampedZoom - device.videoZoomFactor) > 0.01 {
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.videoZoomFactor = clampedZoom
+      } catch {}
+    }
+  }
+
   private func withLockedDevice(_ body: (AVCaptureDevice) throws -> Void) throws {
     var result: Result<Void, Error> = .success(())
     sessionQueue.sync {
@@ -351,21 +445,36 @@ final class CameraEngine: NSObject {
 
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
     guard iso.isFinite, shutterSeconds.isFinite else { return }
-    try withLockedDevice { device in
-      guard device.isExposureModeSupported(.custom) else { return }
-      let bounds = self.exposureBounds(of: device)
-      let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
-      let clampedSeconds = min(max(shutterSeconds, bounds.minSeconds), bounds.maxSeconds)
-      let duration = CMTime(seconds: clampedSeconds, preferredTimescale: 1_000_000_000)
-      device.setExposureModeCustom(duration: duration, iso: clampedIso, completionHandler: nil)
+    sessionQueue.sync {
+      // L'exposition .custom n'existe pas sur le device virtuel : bascule
+      // sur la caméra physique équivalente d'abord.
+      self.ensurePhysicalForManualLocked()
+      guard let device = self.device, device.isExposureModeSupported(.custom) else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        let bounds = self.exposureBounds(of: device)
+        let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
+        let clampedSeconds = min(max(shutterSeconds, bounds.minSeconds), bounds.maxSeconds)
+        let duration = CMTime(seconds: clampedSeconds, preferredTimescale: 1_000_000_000)
+        device.setExposureModeCustom(duration: duration, iso: clampedIso, completionHandler: nil)
+      } catch {}
     }
   }
 
   func setAutoExposure() throws {
-    try withLockedDevice { device in
-      if device.isExposureModeSupported(.continuousAutoExposure) {
-        device.exposureMode = .continuousAutoExposure
+    sessionQueue.sync {
+      if let device = self.device {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+          }
+        } catch {}
       }
+      // Retour en auto : on rend le device virtuel (zoom continu, macro).
+      self.restoreVirtualLocked()
     }
   }
 
@@ -564,7 +673,7 @@ final class CameraEngine: NSObject {
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
     sessionQueue.async {
-      guard self.session.isRunning, let device = self.device else {
+      guard self.session.isRunning, self.device != nil else {
         completion(.failure(CameraEngineError.notRunning))
         return
       }
@@ -577,22 +686,37 @@ final class CameraEngine: NSObject {
       self.stackCancelled = false
       self.stackFramesDone = 0
 
-      let bounds = self.exposureBounds(of: device)
+      // La pose exige l'exposition .custom : bascule sur la caméra physique
+      // (le device virtuel ne la supporte pas — trames auto ultra-courtes
+      // et photos noires sinon).
+      self.ensurePhysicalForManualLocked()
+      guard let poseDevice = self.device else {
+        self.stackRunning = false
+        completion(.failure(CameraEngineError.notRunning))
+        return
+      }
+
+      let bounds = self.exposureBounds(of: poseDevice)
       let frameDuration = min(1.0, bounds.maxSeconds)
-      if device.isExposureModeSupported(.custom) {
+      if poseDevice.isExposureModeSupported(.custom) {
         do {
-          try device.lockForConfiguration()
-          defer { device.unlockForConfiguration() }
+          try poseDevice.lockForConfiguration()
+          defer { poseDevice.unlockForConfiguration() }
           let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
-          device.setExposureModeCustom(
+          poseDevice.setExposureModeCustom(
             duration: CMTime(seconds: frameDuration, preferredTimescale: 1_000_000_000),
             iso: clampedIso,
             completionHandler: nil
           )
         } catch {
+          self.stackRunning = false
           completion(.failure(error))
           return
         }
+      } else {
+        self.stackRunning = false
+        completion(.failure(CameraEngineError.captureFailed("P33: custom exposure unsupported on this camera")))
+        return
       }
 
       let totalFrames = max(2, Int((seconds / frameDuration).rounded()))
@@ -652,17 +776,21 @@ final class CameraEngine: NSObject {
     // retour en exposition auto.
     sessionQueue.async {
       self.stackRunning = false
-      guard let device = self.device else { return }
-      do {
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
-        if device.isExposureModeSupported(.continuousAutoExposure) {
-          device.exposureMode = .continuousAutoExposure
+      if let device = self.device {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+          }
+        } catch {
+          // Verrou refusé : on laisse l'exposition telle quelle plutôt que de
+          // toucher un device non verrouillé.
         }
-      } catch {
-        // Verrou refusé : on laisse l'exposition telle quelle plutôt que de
-        // toucher un device non verrouillé.
       }
+      // Fin de pose : retour au device virtuel (le JS réapplique le manuel
+      // s'il était actif, ce qui rebasculera proprement sur le physique).
+      self.restoreVirtualLocked()
     }
     DispatchQueue.global(qos: .userInitiated).async {
       completion(stacker.finalize())
