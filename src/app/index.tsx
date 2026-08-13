@@ -53,7 +53,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '🌠',
     label: 'Étoiles filantes',
     description:
-      "Pose 1 min en « Les deux » : la fusion max garde les traînées de météores, la moyenne donne un ciel propre. ISO 1600, focus ∞. Trépied, pastille 0,5× ou 1×.",
+      "Une minute de pose en mode Les deux. La fusion max garde les traînées, la moyenne donne un ciel propre. ISO 1600, focus sur ∞. Cale bien le téléphone et vise large.",
     duration: 60,
     style: 'both',
     iso: 1600,
@@ -64,7 +64,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '⭐',
     label: 'Star trails',
     description:
-      "Pose 30 min en fusion max : les étoiles dessinent des cercles autour du pôle. ISO 800, focus ∞. Batterie chargée, téléphone bien calé.",
+      "Trente minutes de pose en fusion max. Les étoiles tracent des arcs autour du pôle. ISO 800, focus sur ∞. Pense à la batterie.",
     duration: 1800,
     style: 'max',
     iso: 800,
@@ -75,7 +75,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '💧',
     label: "Filé d'eau",
     description:
-      "Pose 10 s en moyenne : cascades et vagues deviennent soyeuses. ISO minimal pour ne pas surexposer en plein jour.",
+      "Dix secondes en moyenne. Cascades et vagues deviennent soyeuses. ISO au minimum pour tenir la pose en plein jour.",
     duration: 10,
     style: 'mean',
     iso: 25,
@@ -86,7 +86,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '🎆',
     label: "Feux d'artifice",
     description:
-      "Pose 10 s en fusion max : toutes les gerbes s'accumulent dans une seule image. ISO 100, focus ∞.",
+      "Dix secondes en fusion max. Toutes les gerbes du bouquet s'accumulent sur une seule image. ISO 100, focus sur ∞.",
     duration: 10,
     style: 'max',
     iso: 100,
@@ -97,7 +97,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '🌃',
     label: 'Light trails',
     description:
-      "Pose 30 s en fusion max : les phares des voitures deviennent des rubans de lumière. ISO 50.",
+      "Trente secondes en fusion max. Les phares dessinent des rubans de lumière dans la ville. ISO 50.",
     duration: 30,
     style: 'max',
     iso: 50,
@@ -126,41 +126,41 @@ type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb' | 'tint';
 
 /** Explications pédagogiques : effet de chaque réglage sur la photo. */
 const HELP_TEXTS: Record<string, string> = {
-  iso: "Sensibilité du capteur à la lumière. Bas (25-100) : image propre mais sombre. Haut (1600+) : plus lumineux mais du grain apparaît. Étoiles : 1600-3200.",
+  iso: "Sensibilité du capteur. En bas de la plage (25 à 100), l'image est propre mais sombre. Plus tu montes, plus elle s'éclaircit et plus le grain apparaît. Pour les étoiles, vise 1600 à 3200.",
   shutter:
-    "Durée pendant laquelle le capteur capte la lumière. Rapide (1/500) : fige le mouvement. Lent (1/4, 1 s) : plus de lumière mais flou de bougé — trépied conseillé. Étoiles : 1 s.",
-  ev: "Correction d'exposition en mode auto : + éclaircit la photo, − l'assombrit, sans toucher aux autres réglages.",
+    "Temps pendant lequel le capteur reçoit la lumière. Une vitesse rapide (1/500) fige le mouvement. Une vitesse lente capte plus de lumière, mais le moindre tremblement floute l'image. Pour les étoiles, 1 s sur trépied.",
+  ev: "Correction d'exposition en mode auto. Vers + la photo s'éclaircit, vers − elle s'assombrit. Les autres réglages ne bougent pas.",
   focus:
-    "Mise au point manuelle : 0 = net de près (macro), ∞ = net au loin. Étoiles et paysages : ∞.",
-  wb: "Température de couleur en kelvins. Bas (2500 K) : rend l'image plus bleue/froide. Haut (8000 K) : plus chaude/orangée. Corrige la dominante de la lumière ambiante.",
-  tint: "Axe vert ↔ magenta, en complément de la température. Corrige les dominantes des néons et LED.",
-  flash: "Éclair au moment de la capture. Auto : seulement si la scène est sombre.",
+    "Mise au point manuelle. 0 fait le net tout près, ∞ au loin. Pour un ciel étoilé ou un paysage, mets ∞.",
+  wb: "Température de couleur en kelvins. 2500 K tire vers le bleu, 8000 K vers l'orangé. Sert à corriger la couleur de la lumière ambiante.",
+  tint: "Complète la température sur l'axe vert-magenta. Utile sous les néons ou les LED qui verdissent l'image.",
+  flash: "Éclair au déclenchement. En auto, il ne part que si la scène est sombre.",
   torch:
-    "Lampe continue pendant la visée — utile pour la vidéo ou la mise au point de nuit ; intensité réglable.",
+    "Lampe allumée en continu pendant la visée, avec intensité réglable. Pratique en vidéo ou pour faire le point la nuit.",
   resolution:
-    "48 MP : détails maximum, fichiers ~4× plus lourds, idéal recadrage. 12 MP : plus léger, meilleur en basse lumière (pixels fusionnés).",
+    "En 48 MP tu gardes un maximum de détails et tu peux recadrer large, mais les fichiers pèsent environ quatre fois plus. Le 12 MP fusionne les pixels : fichiers légers et meilleur rendu en basse lumière.",
   quality:
-    "Traitement appliqué par l'iPhone. Max : fusion multi-images (plus net, plus lent). Vitesse : capture immédiate avec traitement minimal, rendu plus naturel.",
+    "Niveau de traitement appliqué par l'iPhone. Max fusionne plusieurs images, c'est plus net mais un peu plus lent. Vitesse capture immédiatement avec un traitement minimal, au rendu plus brut.",
   bracket:
-    "Prend 3 photos d'affilée : sous-exposée, normale, sur-exposée. Base du HDR manuel : tu choisis ou fusionnes ensuite.",
-  livePhoto: "Enregistre 1,5 s de vidéo autour de la photo (sauvée en fichier vidéo séparé).",
-  depth: "Capture la carte de profondeur (utilisée pour les effets portrait en retouche).",
-  timer: "Délai avant capture — laisse le temps de stabiliser le téléphone ou de poser.",
-  grid: "Grille des tiers : place ton sujet sur les lignes ou intersections pour composer.",
+    "Trois photos d'affilée : une sombre, une normale, une claire. Tu choisis la bonne ensuite, ou tu les fusionnes en HDR.",
+  livePhoto: "Enregistre environ 1,5 s de vidéo autour de la photo, sauvée dans un fichier séparé.",
+  depth: "Enregistre la carte de profondeur avec la photo, pour les effets portrait en retouche.",
+  timer: "Retarde le déclenchement. Le temps de caler le téléphone ou d'entrer dans le cadre.",
+  grid: "Grille des tiers. Place ton sujet sur une ligne ou une intersection, la composition respire mieux.",
   nightVision:
-    "Teinte toute l'interface en rouge sombre : tes yeux gardent leur adaptation à l'obscurité (qui prend 20-30 min à revenir après un écran blanc). Indispensable en astro.",
+    "Passe toute l'interface en rouge sombre. Tes yeux mettent 20 à 30 minutes à se réhabituer au noir après un écran lumineux, le rouge évite de perdre cette adaptation.",
   peaking:
-    "Focus peaking : surligne en vert ce qui est net dans l'image. Le moyen le plus fiable de faire une mise au point manuelle précise, surtout de nuit.",
+    "Surligne en vert les zones nettes de l'image. C'est le plus simple pour réussir une mise au point manuelle, surtout la nuit.",
   zebras:
-    "Zebras : marque en rouge les zones surexposées (au-delà de ~98 %). Si une zone importante zèbre, baisse l'ISO ou la vitesse.",
+    "Marque en rouge les zones surexposées. Si une zone importante se raye, baisse l'ISO ou accélère la vitesse.",
   histogram:
-    "Histogramme : répartition des luminosités, des ombres (gauche) aux hautes lumières (droite). Collé à droite = surexposition, collé à gauche = sous-exposition.",
+    "Répartition des luminosités, ombres à gauche, hautes lumières à droite. Un paquet collé à droite signale une photo cramée, collé à gauche une photo bouchée.",
   level:
-    "Niveau à bulle : la ligne suit l'inclinaison du téléphone et devient verte quand l'horizon est droit (±1°).",
+    "La ligne suit l'inclinaison du téléphone et devient verte quand l'horizon est droit.",
   align:
-    "Alignement main levée : recale chaque trame sur la première avant l'empilement (translation). Permet une pose sans trépied — reste le plus stable possible.",
+    "Recale chaque image sur la première pendant la pose. Permet de poser sans trépied si tu restes à peu près stable.",
   meteorFilter:
-    "Filtre météores : seules les trames où quelque chose bouge (météore, avion, satellite) nourrissent la fusion max — traînées nettes sur un fond plus propre.",
+    "Ne garde pour la fusion max que les images où quelque chose est passé dans le ciel. Les traînées ressortent sur un fond plus propre.",
 };
 
 function nearestIndex(values: number[], target: number): number {
@@ -740,7 +740,7 @@ export default function CameraScreen() {
 
           {updateReady ? (
             <Pressable style={styles.updateBanner} onPress={() => Updates.reloadAsync()}>
-              <Text style={styles.updateText}>Mise à jour prête — toucher pour l'appliquer</Text>
+              <Text style={styles.updateText}>Mise à jour prête. Touche pour l'appliquer.</Text>
             </Pressable>
           ) : null}
 
@@ -932,7 +932,7 @@ export default function CameraScreen() {
           {posing ? (
             <View style={styles.toast}>
               <Text style={styles.toastText}>
-                {`Pose en cours… ${poseProgress ? `${poseProgress.frame}/${poseProgress.total} s` : 'préparation'} — ne bouge pas le téléphone`}
+                {`Pose en cours (${poseProgress ? `${poseProgress.frame}/${poseProgress.total} s` : 'préparation'}). Ne bouge pas le téléphone.`}
               </Text>
             </View>
           ) : null}
