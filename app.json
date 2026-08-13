@@ -2,7 +2,7 @@
   "expo": {
     "name": "Persei",
     "slug": "persei",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "persei",
@@ -12,7 +12,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.mateobaril.persei",
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Persei utilise l'appareil photo pour capturer vos photos avec des réglages manuels.",
         "ITSAppUsesNonExemptEncryption": false
