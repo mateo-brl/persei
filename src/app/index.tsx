@@ -427,8 +427,11 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.root}>
+      {/* GestureDetector exige une vue native en enfant direct. */}
       <GestureDetector gesture={pinch}>
-        <PerseiCameraView style={StyleSheet.absoluteFill} />
+        <View style={StyleSheet.absoluteFill}>
+          <PerseiCameraView style={StyleSheet.absoluteFill} />
+        </View>
       </GestureDetector>
 
       {grid ? (
