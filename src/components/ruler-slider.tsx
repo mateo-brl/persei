@@ -62,6 +62,9 @@ export function RulerSlider({ count, index, onChange }: RulerSliderProps) {
 
 const styles = StyleSheet.create({
   container: {
+    // flex: 1 obligatoire : le rail est en position absolue et ne donne
+    // aucune largeur intrinsèque au conteneur.
+    flex: 1,
     height: 44,
     overflow: 'hidden',
     justifyContent: 'center',
