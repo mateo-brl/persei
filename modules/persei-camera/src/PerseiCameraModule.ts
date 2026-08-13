@@ -1,8 +1,8 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import type { CameraCapabilities, LensId } from './PerseiCamera.types';
+import type { CameraCapabilities, LensId, PerseiCameraEvents } from './PerseiCamera.types';
 
-declare class PerseiCameraModule extends NativeModule<Record<string, never>> {
+declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   requestPermission(): Promise<boolean>;
   /** Démarre (ou reconfigure) la session sur l'objectif donné et renvoie ses capacités. */
   start(lens: LensId): Promise<CameraCapabilities>;
@@ -15,6 +15,7 @@ declare class PerseiCameraModule extends NativeModule<Record<string, never>> {
   setAutoFocus(): Promise<void>;
   setWhiteBalanceKelvin(kelvin: number): Promise<void>;
   setAutoWhiteBalance(): Promise<void>;
+  setZoom(factor: number): Promise<void>;
   /** Capture une photo, renvoie les URIs des fichiers produits (HEIC, et DNG si raw). */
   capturePhoto(raw: boolean): Promise<string[]>;
 }

@@ -5,6 +5,18 @@ public class PerseiCameraModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PerseiCamera")
 
+    Events("onExposureUpdate")
+
+    OnStartObserving {
+      CameraEngine.shared.onExposureUpdate = { [weak self] payload in
+        self?.sendEvent("onExposureUpdate", payload)
+      }
+    }
+
+    OnStopObserving {
+      CameraEngine.shared.onExposureUpdate = nil
+    }
+
     View(PerseiCameraView.self) {}
 
     AsyncFunction("requestPermission") { (promise: Promise) in
@@ -54,6 +66,10 @@ public class PerseiCameraModule: Module {
 
     AsyncFunction("setAutoWhiteBalance") {
       try CameraEngine.shared.setAutoWhiteBalance()
+    }
+
+    AsyncFunction("setZoom") { (factor: Double) in
+      try CameraEngine.shared.setZoom(factor)
     }
 
     AsyncFunction("capturePhoto") { (raw: Bool, promise: Promise) in
