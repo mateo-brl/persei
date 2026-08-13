@@ -2,17 +2,21 @@ import { NativeModule, requireNativeModule } from 'expo';
 
 import type {
   CameraCapabilities,
+  CameraPosition,
   CaptureOptions,
   FlashMode,
-  LensId,
   PerseiCameraEvents,
   QualityPrioritization,
+  StackMode,
 } from './PerseiCamera.types';
 
 declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   requestPermission(): Promise<boolean>;
-  /** Démarre (ou reconfigure) la session sur l'objectif donné et renvoie ses capacités. */
-  start(lens: LensId): Promise<CameraCapabilities>;
+  /**
+   * Démarre (ou reconfigure) la session et renvoie les capacités. L'arrière
+   * utilise le device virtuel : zoom continu 0,5×→télé, bascule auto, macro.
+   */
+  start(position: CameraPosition): Promise<CameraCapabilities>;
   stop(): Promise<void>;
   setManualExposure(iso: number, shutterSeconds: number): Promise<void>;
   setAutoExposure(): Promise<void>;
@@ -34,6 +38,12 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   setDepthEnabled(enabled: boolean): Promise<void>;
   /** Capture ; renvoie les URIs produits (HEIC, DNG si raw, MOV si Live Photo). */
   capturePhoto(options: CaptureOptions): Promise<string[]>;
+  /**
+   * Pose longue par empilement (durée libre, pas de plafond) : trames de ~1 s
+   * fusionnées en moyenne et/ou en max. Progression via onLongExposureProgress.
+   */
+  startLongExposure(seconds: number, iso: number, mode: StackMode): Promise<string[]>;
+  cancelLongExposure(): Promise<void>;
 }
 
 export default requireNativeModule<PerseiCameraModule>('PerseiCamera');

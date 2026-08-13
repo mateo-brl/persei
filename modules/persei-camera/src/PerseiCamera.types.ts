@@ -1,8 +1,17 @@
-export type LensId = 'ultraWide' | 'wide' | 'telephoto' | 'front';
+export type CameraPosition = 'back' | 'front';
 
 export type FlashMode = 'off' | 'auto' | 'on';
 
 export type QualityPrioritization = 'speed' | 'balanced' | 'quality';
+
+/** Rendus d'une pose longue : moyenne (lueur), fusion max (étoiles), ou les deux. */
+export type StackMode = 'mean' | 'max' | 'both';
+
+/** Pastille de zoom façon app Apple : `factor` affiché, `zoom` = videoZoomFactor. */
+export interface ZoomPreset {
+  factor: number;
+  zoom: number;
+}
 
 export interface CameraCapabilities {
   minIso: number;
@@ -16,9 +25,8 @@ export interface CameraCapabilities {
   supportsRaw: boolean;
   supportsProRaw: boolean;
   maxMegapixels: number;
-  lenses: LensId[];
-  /** Facteur de zoom réel du téléobjectif vs grand-angle (5 sur 16 Pro), 0 si absent. */
-  telephotoFactor: number;
+  zoomPresets: ZoomPreset[];
+  hasFrontCamera: boolean;
   minZoom: number;
   maxZoom: number;
   hasFlash: boolean;
@@ -44,6 +52,12 @@ export interface CaptureOptions {
   bracketStops?: number[];
 }
 
+export interface LongExposureProgress {
+  frame: number;
+  total: number;
+}
+
 export type PerseiCameraEvents = {
   onExposureUpdate(update: ExposureUpdate): void;
+  onLongExposureProgress(progress: LongExposureProgress): void;
 };

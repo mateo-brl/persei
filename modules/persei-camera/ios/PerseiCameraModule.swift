@@ -11,16 +11,20 @@ public class PerseiCameraModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PerseiCamera")
 
-    Events("onExposureUpdate")
+    Events("onExposureUpdate", "onLongExposureProgress")
 
     OnStartObserving {
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
       }
+      CameraEngine.shared.onLongExposureProgress = { [weak self] payload in
+        self?.sendEvent("onLongExposureProgress", payload)
+      }
     }
 
     OnStopObserving {
       CameraEngine.shared.onExposureUpdate = nil
+      CameraEngine.shared.onLongExposureProgress = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -100,6 +104,21 @@ public class PerseiCameraModule: Module {
 
     AsyncFunction("setDepthEnabled") { (enabled: Bool) in
       CameraEngine.shared.setDepthEnabled(enabled)
+    }
+
+    AsyncFunction("startLongExposure") { (seconds: Double, iso: Double, mode: String, promise: Promise) in
+      CameraEngine.shared.startLongExposure(seconds: seconds, iso: iso, mode: mode) { result in
+        switch result {
+        case .success(let uris):
+          promise.resolve(uris)
+        case .failure(let error):
+          promise.reject("ERR_LONG_EXPOSURE", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("cancelLongExposure") {
+      CameraEngine.shared.cancelLongExposure()
     }
 
     AsyncFunction("capturePhoto") { (options: CaptureOptions, promise: Promise) in

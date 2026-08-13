@@ -43,11 +43,7 @@ final class CameraEngine: NSObject {
   private var observations: [NSKeyValueObservation] = []
   private var lastEmit = Date.distantPast
 
-  private static let backLensDeviceTypes: [String: AVCaptureDevice.DeviceType] = [
-    "ultraWide": .builtInUltraWideCamera,
-    "wide": .builtInWideAngleCamera,
-    "telephoto": .builtInTelephotoCamera,
-  ]
+  // (plus de table d'objectifs discrets : l'arrière passe par le device virtuel)
 
   // MARK: - Session lifecycle
 
@@ -77,8 +73,11 @@ final class CameraEngine: NSObject {
     if lens == "front" {
       return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
     }
-    let deviceType = Self.backLensDeviceTypes[lens] ?? .builtInWideAngleCamera
-    return AVCaptureDevice.default(deviceType, for: .video, position: .back)
+    // Arrière : device virtuel comme l'app Camera d'Apple — zoom continu
+    // 0,5x→télé avec bascule d'objectif automatique et macro auto.
+    return AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back)
+      ?? AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back)
+      ?? AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back)
       ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
   }
 
@@ -146,19 +145,49 @@ final class CameraEngine: NSObject {
     photoOutput.maxPhotoDimensions = preferHighResolution ? dimensions.last! : dimensions.first!
   }
 
+  /// Pastilles de zoom façon app Apple (0,5× / 1× / 2× / 5× sur 16 Pro) :
+  /// `factor` est l'affichage, `zoom` le videoZoomFactor correspondant sur le
+  /// device virtuel. Le 2× vient du recadrage natif qualité optique du 48 MP.
+  private func zoomPresets(of device: AVCaptureDevice) -> [[String: Double]] {
+    guard device.position == .back else { return [] }
+    let constituents = device.constituentDevices
+    guard constituents.count >= 2 else {
+      return [["factor": 1.0, "zoom": 1.0]]
+    }
+
+    var presets: [[String: Double]] = []
+    let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
+    let hasUltraWide = constituents.contains { $0.deviceType == .builtInUltraWideCamera }
+    let wideZoom = hasUltraWide ? (switchOvers.first ?? 2.0) : 1.0
+
+    if hasUltraWide {
+      presets.append(["factor": 0.5, "zoom": 1.0])
+    }
+    presets.append(["factor": 1.0, "zoom": wideZoom])
+
+    if let wide = constituents.first(where: { $0.deviceType == .builtInWideAngleCamera }) {
+      let crops = wide.activeFormat.secondaryNativeResolutionZoomFactors.map { Double($0) }
+      if let crop = crops.first, crop > 1 {
+        presets.append(["factor": crop, "zoom": wideZoom * crop])
+      }
+    }
+
+    if constituents.contains(where: { $0.deviceType == .builtInTelephotoCamera }) {
+      if hasUltraWide, switchOvers.count >= 2, wideZoom > 0 {
+        presets.append(["factor": (switchOvers[1] / wideZoom * 10).rounded() / 10, "zoom": switchOvers[1]])
+      } else if !hasUltraWide, let first = switchOvers.first {
+        presets.append(["factor": first, "zoom": first])
+      }
+    }
+
+    presets.sort { ($0["factor"] ?? 0) < ($1["factor"] ?? 0) }
+    return presets
+  }
+
   private func capabilities(of device: AVCaptureDevice) -> [String: Any] {
     let format = device.activeFormat
-    let backDiscovery = AVCaptureDevice.DiscoverySession(
-      deviceTypes: [.builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
-      mediaType: .video,
-      position: .back
-    )
-    var lenses = backDiscovery.devices.compactMap { available -> String? in
-      Self.backLensDeviceTypes.first { $0.value == available.deviceType }?.key
-    }
-    if AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil {
-      lenses.append("front")
-    }
+    let hasFrontCamera =
+      AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil
     let maxDimensions = format.supportedMaxPhotoDimensions.last
     let maxMegapixels = maxDimensions.map { Double($0.width) * Double($0.height) / 1_000_000.0 } ?? 12.0
 
@@ -172,34 +201,16 @@ final class CameraEngine: NSObject {
       "supportsRaw": !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
       "supportsProRaw": photoOutput.isAppleProRAWSupported,
       "maxMegapixels": maxMegapixels,
-      "lenses": lenses,
+      "zoomPresets": zoomPresets(of: device),
+      "hasFrontCamera": hasFrontCamera,
       "minZoom": Double(device.minAvailableVideoZoomFactor),
       "maxZoom": Double(device.maxAvailableVideoZoomFactor),
-      "telephotoFactor": telephotoZoomFactor(),
       "hasFlash": device.hasFlash,
       "hasTorch": device.hasTorch,
       "supportsLivePhoto": photoOutput.isLivePhotoCaptureSupported,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
       "maxBracketCount": Int(photoOutput.maxBracketedCapturePhotoCount),
     ]
-  }
-
-  /// Facteur de zoom réel du téléobjectif par rapport au grand-angle (5 sur
-  /// 16 Pro, 3 sur 15 Pro, 0 si pas de télé), lu sur le device virtuel.
-  private func telephotoZoomFactor() -> Double {
-    if let triple = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) {
-      let factors = triple.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
-      if factors.count >= 2, factors[0] > 0 {
-        return factors[1] / factors[0]
-      }
-    }
-    if let dual = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
-      let factors = dual.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
-      if let last = factors.last, last > 0 {
-        return last
-      }
-    }
-    return 0
   }
 
   // MARK: - Live readout
@@ -420,6 +431,113 @@ final class CameraEngine: NSObject {
         self.photoOutput.isDepthDataDeliveryEnabled = enabled
       }
       self.session.commitConfiguration()
+    }
+  }
+
+  // MARK: - Pose longue (empilement)
+
+  /// Progression de la pose ({frame, total}), poussée vers JS.
+  var onLongExposureProgress: (([String: Any]) -> Void)?
+  private var stackCancelled = false
+  private var stackFramesDone = 0
+
+  func cancelLongExposure() {
+    sessionQueue.async { self.stackCancelled = true }
+  }
+
+  /// Pose longue sans plafond : capture continue de trames à ~1 s d'exposition
+  /// (le maximum matériel), empilées en moyenne (« lueur », nuit propre) et/ou
+  /// en fusion max (« étoiles », garde les traînées de météores).
+  func startLongExposure(
+    seconds: Double,
+    iso: Double,
+    mode: String,
+    completion: @escaping (Result<[String], Error>) -> Void
+  ) {
+    sessionQueue.async {
+      guard self.session.isRunning, let device = self.device else {
+        completion(.failure(CameraEngineError.notRunning))
+        return
+      }
+      self.stackCancelled = false
+      self.stackFramesDone = 0
+
+      let frameDuration = min(1.0, device.activeFormat.maxExposureDuration.seconds)
+      do {
+        try device.lockForConfiguration()
+        let clampedIso = min(max(Float(iso), device.activeFormat.minISO), device.activeFormat.maxISO)
+        device.setExposureModeCustom(
+          duration: CMTime(seconds: frameDuration, preferredTimescale: 1_000_000_000),
+          iso: clampedIso,
+          completionHandler: nil
+        )
+        device.unlockForConfiguration()
+      } catch {
+        completion(.failure(error))
+        return
+      }
+
+      let totalFrames = max(2, Int((seconds / frameDuration).rounded()))
+      let stacker = FrameStacker(mode: mode)
+      self.captureStackFrame(remaining: totalFrames, total: totalFrames, stacker: stacker, completion: completion)
+    }
+  }
+
+  private func captureStackFrame(
+    remaining: Int,
+    total: Int,
+    stacker: FrameStacker,
+    completion: @escaping (Result<[String], Error>) -> Void
+  ) {
+    if remaining == 0 || stackCancelled {
+      finishStack(stacker: stacker, completion: completion)
+      return
+    }
+
+    let settings: AVCapturePhotoSettings
+    if let format = hevcFormat() {
+      settings = AVCapturePhotoSettings(format: format)
+    } else {
+      settings = AVCapturePhotoSettings()
+    }
+    settings.photoQualityPrioritization = .speed
+
+    let captureId = settings.uniqueID
+    let delegate = PhotoCaptureDelegate { [weak self] result in
+      guard let self else { return }
+      self.sessionQueue.async {
+        self.inFlightCaptures.removeValue(forKey: captureId)
+        if case .success(let uris) = result, let uri = uris.first, let url = URL(string: uri) {
+          stacker.add(url: url)
+          try? FileManager.default.removeItem(at: url)
+          self.stackFramesDone += 1
+          self.onLongExposureProgress?(["frame": self.stackFramesDone, "total": total])
+        }
+        // Frame ratée : on continue, l'empilement tolère les trous.
+        self.captureStackFrame(remaining: remaining - 1, total: total, stacker: stacker, completion: completion)
+      }
+    }
+    inFlightCaptures[captureId] = delegate
+    photoOutput.capturePhoto(with: settings, delegate: delegate)
+  }
+
+  private func finishStack(
+    stacker: FrameStacker,
+    completion: @escaping (Result<[String], Error>) -> Void
+  ) {
+    // Rendu final hors de la sessionQueue (peut prendre du temps), puis
+    // retour en exposition auto.
+    sessionQueue.async {
+      if let device = self.device {
+        try? device.lockForConfiguration()
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+          device.exposureMode = .continuousAutoExposure
+        }
+        device.unlockForConfiguration()
+      }
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      completion(stacker.finalize())
     }
   }
 
