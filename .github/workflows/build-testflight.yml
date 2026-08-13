@@ -25,7 +25,9 @@ jobs:
             --local --non-interactive \
             --output "${{ runner.temp }}/app.ipa"
       - name: Envoyer sur TestFlight
-        if: inputs.submit != false
+        # Sur un push de tag, inputs est vide et '' == false pour GitHub :
+        # il faut autoriser explicitement le cas tag.
+        if: ${{ github.event_name == 'push' || inputs.submit }}
         env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
         run: |
           eas submit --platform ios --profile production \
