@@ -314,6 +314,16 @@ final class CameraEngine: NSObject {
   /// faire sur la caméra physique correspondant au zoom courant, puis on
   /// revient au virtuel en mode auto.
   private var savedVirtualZoom: CGFloat?
+  // Le header Apple est explicite : les devices virtuels ne supportent ni
+  // l'exposition custom, ni lensPosition, ni les gains de balance des blancs.
+  // Chaque réglage manuel bascule donc sur le physique ; on ne rend le
+  // virtuel que quand TOUT est repassé en auto.
+  private var manualExposureActive = false
+  private var manualFocusActive = false
+  private var manualWbActive = false
+  private var anyManualActive: Bool {
+    manualExposureActive || manualFocusActive || manualWbActive
+  }
 
   /// Caméra physique + zoom équivalent pour le facteur courant du virtuel.
   private func physicalConstituent(
@@ -448,6 +458,7 @@ final class CameraEngine: NSObject {
     sessionQueue.sync {
       // L'exposition .custom n'existe pas sur le device virtuel : bascule
       // sur la caméra physique équivalente d'abord.
+      self.manualExposureActive = true
       self.ensurePhysicalForManualLocked()
       guard let device = self.device, device.isExposureModeSupported(.custom) else { return }
       do {
@@ -464,6 +475,7 @@ final class CameraEngine: NSObject {
 
   func setAutoExposure() throws {
     sessionQueue.sync {
+      self.manualExposureActive = false
       if let device = self.device {
         do {
           try device.lockForConfiguration()
@@ -473,8 +485,10 @@ final class CameraEngine: NSObject {
           }
         } catch {}
       }
-      // Retour en auto : on rend le device virtuel (zoom continu, macro).
-      self.restoreVirtualLocked()
+      // Retour au virtuel seulement quand plus aucun réglage manuel n'est actif.
+      if !self.anyManualActive {
+        self.restoreVirtualLocked()
+      }
     }
   }
 
@@ -486,43 +500,82 @@ final class CameraEngine: NSObject {
   }
 
   func setLensPosition(_ position: Double) throws {
-    try withLockedDevice { device in
-      guard device.isLockingFocusWithCustomLensPositionSupported else { return }
-      let clamped = min(max(Float(position), 0.0), 1.0)
-      device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
+    guard position.isFinite else { return }
+    sessionQueue.sync {
+      // lensPosition non supporté sur le device virtuel : physique requis.
+      self.manualFocusActive = true
+      self.ensurePhysicalForManualLocked()
+      guard let device = self.device,
+            device.isLockingFocusWithCustomLensPositionSupported else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        let clamped = min(max(Float(position), 0.0), 1.0)
+        device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
+      } catch {}
     }
   }
 
   func setAutoFocus() throws {
-    try withLockedDevice { device in
-      if device.isFocusModeSupported(.continuousAutoFocus) {
-        device.focusMode = .continuousAutoFocus
+    sessionQueue.sync {
+      self.manualFocusActive = false
+      if let device = self.device {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          if device.isFocusModeSupported(.continuousAutoFocus) {
+            device.focusMode = .continuousAutoFocus
+          }
+        } catch {}
+      }
+      if !self.anyManualActive {
+        self.restoreVirtualLocked()
       }
     }
   }
 
   func setWhiteBalance(kelvin: Double, tint: Double) throws {
-    try withLockedDevice { device in
-      let temperatureAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
-        temperature: Float(kelvin),
-        tint: Float(tint)
-      )
-      var gains = device.deviceWhiteBalanceGains(for: temperatureAndTint)
-      guard gains.redGain.isFinite, gains.greenGain.isFinite, gains.blueGain.isFinite else {
-        return
-      }
-      let maxGain = device.maxWhiteBalanceGain
-      gains.redGain = min(max(gains.redGain, 1.0), maxGain)
-      gains.greenGain = min(max(gains.greenGain, 1.0), maxGain)
-      gains.blueGain = min(max(gains.blueGain, 1.0), maxGain)
-      device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+    guard kelvin.isFinite, tint.isFinite else { return }
+    sessionQueue.sync {
+      // Les gains de BdB verrouillés ne sont pas supportés sur le device
+      // virtuel : physique requis.
+      self.manualWbActive = true
+      self.ensurePhysicalForManualLocked()
+      guard let device = self.device else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        let temperatureAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
+          temperature: Float(kelvin),
+          tint: Float(tint)
+        )
+        var gains = device.deviceWhiteBalanceGains(for: temperatureAndTint)
+        guard gains.redGain.isFinite, gains.greenGain.isFinite, gains.blueGain.isFinite else {
+          return
+        }
+        let maxGain = device.maxWhiteBalanceGain
+        gains.redGain = min(max(gains.redGain, 1.0), maxGain)
+        gains.greenGain = min(max(gains.greenGain, 1.0), maxGain)
+        gains.blueGain = min(max(gains.blueGain, 1.0), maxGain)
+        device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+      } catch {}
     }
   }
 
   func setAutoWhiteBalance() throws {
-    try withLockedDevice { device in
-      if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
-        device.whiteBalanceMode = .continuousAutoWhiteBalance
+    sessionQueue.sync {
+      self.manualWbActive = false
+      if let device = self.device {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+          }
+        } catch {}
+      }
+      if !self.anyManualActive {
+        self.restoreVirtualLocked()
       }
     }
   }
@@ -788,9 +841,11 @@ final class CameraEngine: NSObject {
           // toucher un device non verrouillé.
         }
       }
-      // Fin de pose : retour au device virtuel (le JS réapplique le manuel
-      // s'il était actif, ce qui rebasculera proprement sur le physique).
-      self.restoreVirtualLocked()
+      // Fin de pose : retour au device virtuel seulement si aucun réglage
+      // manuel n'est resté actif (le JS réapplique le manuel sinon).
+      if !self.anyManualActive {
+        self.restoreVirtualLocked()
+      }
     }
     DispatchQueue.global(qos: .userInitiated).async {
       completion(stacker.finalize())
