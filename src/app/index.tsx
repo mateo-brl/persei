@@ -369,8 +369,22 @@ export default function CameraScreen() {
     } finally {
       setPosing(false);
       setPoseProgress(null);
+      // Le natif repasse en exposition auto à la fin d'une pose : si
+      // l'utilisateur était en manuel, on réapplique ses réglages.
+      if (!exposureAuto) {
+        applyManualExposure(isoStops[isoIdx], shutterStops[shutterIdx]);
+      }
     }
-  }, [exposureAuto, isoStops, isoIdx, poseDuration, poseStyle]);
+  }, [
+    exposureAuto,
+    isoStops,
+    isoIdx,
+    shutterStops,
+    shutterIdx,
+    applyManualExposure,
+    poseDuration,
+    poseStyle,
+  ]);
   const pinch = useMemo(
     () =>
       Gesture.Pinch()
