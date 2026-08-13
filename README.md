@@ -22,7 +22,9 @@ Appareil photo iOS à contrôles manuels complets — ISO, vitesse d'obturation,
 
 ## Feuille de route
 
-- [x] v0 : préview live, exposition manuelle (ISO + vitesse), focus manuel, BdB kelvin, RAW/ProRAW, choix d'objectif, sauvegarde photothèque
-- [ ] Mode astro/météores : capture continue + stacking en fusion max (garde les traînées — ce que le mode Nuit d'Apple efface)
-- [ ] Focus peaking, histogramme, zebras
+- [x] v0.1 : préview live, exposition manuelle (ISO + vitesse), focus manuel, BdB kelvin, RAW/ProRAW, sauvegarde photothèque
+- [x] v0.2-0.3 : UI Final Cut Camera (molettes à crans, lecture capteur temps réel), frontale, flash/torche, teinte, Live Photos, profondeur, bracketing, 12/48 MP, aide ⓘ, mises à jour in-app
+- [x] v0.4 : device virtuel (zoom continu 0,5×→5×, pastilles matérielles dont crop 2×, macro auto) + **mode POSE LONGUE sans plafond** : empilement de trames 1 s en moyenne (« Lueur ») et/ou fusion max (« Étoiles » — garde les traînées de météores que le mode Nuit d'Apple efface)
+- [ ] Alignement des trames (pose à main levée), focus peaking, histogramme, zebras
 - [ ] Presets par scénario (étoiles, filé d'eau, light trails)
+- [ ] Vidéo (4K120, Apple Log, ProRes)

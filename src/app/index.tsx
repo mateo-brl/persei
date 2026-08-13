@@ -9,28 +9,25 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   CameraCapabilities,
+  CameraPosition,
   ExposureUpdate,
   FlashMode,
-  LensId,
   PerseiCamera,
   PerseiCameraView,
   QualityPrioritization,
+  StackMode,
+  ZoomPreset,
 } from '../../modules/persei-camera';
 import { RulerSlider } from '../components/ruler-slider';
 
 const ACCENT = '#ffb800';
 
-function lensLabel(id: LensId, telephotoFactor: number): string {
-  if (id === 'ultraWide') return '0,5×';
-  if (id === 'wide') return '1×';
-  if (id === 'telephoto') {
-    if (telephotoFactor > 0) {
-      return `${(Math.round(telephotoFactor * 10) / 10).toString().replace('.', ',')}×`;
-    }
-    return 'Télé';
-  }
-  return id;
+function formatZoomFactor(factor: number): string {
+  return `${(Math.round(factor * 10) / 10).toString().replace('.', ',')}×`;
 }
+
+/** Durées de pose proposées (secondes) — aucun plafond matériel, c'est de l'empilement. */
+const POSE_DURATIONS = [10, 30, 60, 120, 300];
 
 const ISO_BASE = [
   25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
@@ -97,9 +94,13 @@ function formatFocus(position: number): string {
 export default function CameraScreen() {
   const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [caps, setCaps] = useState<CameraCapabilities | null>(null);
-  const [backLens, setBackLens] = useState<LensId>('wide');
   const [front, setFront] = useState(false);
   const [raw, setRaw] = useState(false);
+  const [captureMode, setCaptureMode] = useState<'photo' | 'pose'>('photo');
+  const [poseDuration, setPoseDuration] = useState(30);
+  const [poseStyle, setPoseStyle] = useState<StackMode>('both');
+  const [posing, setPosing] = useState(false);
+  const [poseProgress, setPoseProgress] = useState<{ frame: number; total: number } | null>(null);
 
   const [exposureAuto, setExposureAuto] = useState(true);
   const [focusAuto, setFocusAuto] = useState(true);
@@ -134,7 +135,7 @@ export default function CameraScreen() {
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
   const liveRef = useRef<ExposureUpdate | null>(null);
 
-  const lens: LensId = front ? 'front' : backLens;
+  const position: CameraPosition = front ? 'front' : 'back';
 
   const isoStops = useMemo(
     () => (caps ? ISO_BASE.filter((v) => v >= caps.minIso && v <= caps.maxIso) : ISO_BASE),
@@ -171,6 +172,11 @@ export default function CameraScreen() {
   }, []);
 
   useEffect(() => {
+    const sub = PerseiCamera.addListener('onLongExposureProgress', setPoseProgress);
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
@@ -196,13 +202,13 @@ export default function CameraScreen() {
     if (permission !== 'granted') return;
     (async () => {
       try {
-        const capabilities = await PerseiCamera.start(lens);
+        const capabilities = await PerseiCamera.start(position);
         setCaps(capabilities);
       } catch (e) {
         setToast(`Erreur caméra : ${String(e)}`);
       }
     })();
-  }, [permission, lens]);
+  }, [permission, position]);
 
   // Un changement d'objectif réinitialise le matériel : on réapplique l'état.
   useEffect(() => {
@@ -337,11 +343,34 @@ export default function CameraScreen() {
     (scale: number) => {
       const min = caps?.minZoom ?? 1;
       const max = Math.min(caps?.maxZoom ?? 6, 10);
-      const next = Math.min(Math.max(zoomBase.current * scale, min), max);
+      const next = Math.min(Math.max(zoomBase.current * scale, min), Math.min(max, 50));
       PerseiCamera.setZoom(next).catch(() => {});
     },
     [caps]
   );
+
+  const startPose = useCallback(async () => {
+    setPosing(true);
+    setPoseProgress(null);
+    try {
+      const media = await MediaLibrary.requestPermissionsAsync();
+      if (!media.granted) {
+        setToast('Accès photothèque refusé');
+        return;
+      }
+      // ISO de pose : la valeur manuelle si définie, sinon 1600 (ciel étoilé).
+      const iso = exposureAuto ? 1600 : isoStops[isoIdx];
+      const uris = await PerseiCamera.startLongExposure(poseDuration, iso, poseStyle);
+      await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
+      if (uris[0]) setThumbUri(uris[0]);
+      setToast('Pose enregistrée ✓');
+    } catch (e) {
+      setToast(`Échec pose : ${String(e)}`);
+    } finally {
+      setPosing(false);
+      setPoseProgress(null);
+    }
+  }, [exposureAuto, isoStops, isoIdx, poseDuration, poseStyle]);
   const pinch = useMemo(
     () =>
       Gesture.Pinch()
@@ -405,8 +434,7 @@ export default function CameraScreen() {
     );
   }
 
-  const backLenses = (caps?.lenses ?? []).filter((l) => l !== 'front');
-  const hasFront = (caps?.lenses ?? []).includes('front');
+  const hasFront = caps?.hasFrontCamera ?? false;
 
   const rulerFor = (param: ParamKey): { count: number; index: number } => {
     switch (param) {
@@ -459,20 +487,7 @@ export default function CameraScreen() {
       <SafeAreaView style={styles.overlay} pointerEvents="box-none">
         <View style={styles.topBar}>
           {!front ? (
-            <View style={styles.lensRow}>
-              {backLenses.map((id) => (
-                <Pressable
-                  key={id}
-                  style={[styles.lensPill, backLens === id && styles.lensPillActive]}
-                  onPress={() => setBackLens(id)}
-                >
-                  <Text style={[styles.lensText, backLens === id && styles.lensTextActive]}>
-                    {lensLabel(id, caps?.telephotoFactor ?? 0)}
-                  </Text>
-                </Pressable>
-              ))}
-              <ZoomBadge />
-            </View>
+            <ZoomPresetPills presets={caps?.zoomPresets ?? []} />
           ) : (
             <View style={styles.lensRow}>
               <Text style={[styles.lensText, styles.lensTextActive, { paddingHorizontal: 10 }]}>
@@ -655,6 +670,40 @@ export default function CameraScreen() {
             </View>
           ) : null}
 
+          {posing ? (
+            <View style={styles.toast}>
+              <Text style={styles.toastText}>
+                {`Pose en cours… ${poseProgress ? `${poseProgress.frame}/${poseProgress.total} s` : 'préparation'} — ne bouge pas le téléphone`}
+              </Text>
+            </View>
+          ) : null}
+
+          {!front && !posing ? (
+            <Segmented
+              options={['photo', 'pose']}
+              labels={['PHOTO', 'POSE LONGUE']}
+              value={captureMode}
+              onChange={(v) => setCaptureMode(v as 'photo' | 'pose')}
+            />
+          ) : null}
+
+          {captureMode === 'pose' && !front && !posing ? (
+            <View style={styles.poseBar}>
+              <Segmented
+                options={POSE_DURATIONS.map(String)}
+                labels={['10 s', '30 s', '1 min', '2 min', '5 min']}
+                value={`${poseDuration}`}
+                onChange={(v) => setPoseDuration(Number(v))}
+              />
+              <Segmented
+                options={['max', 'mean', 'both']}
+                labels={['Étoiles', 'Lueur', 'Les deux']}
+                value={poseStyle}
+                onChange={(v) => setPoseStyle(v as StackMode)}
+              />
+            </View>
+          ) : null}
+
           <ChipsRow
             activeParam={activeParam}
             openParam={openParam}
@@ -677,10 +726,26 @@ export default function CameraScreen() {
             </View>
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
-              onPress={capture}
+              onPress={() => {
+                if (captureMode === 'pose' && !front) {
+                  if (posing) {
+                    PerseiCamera.cancelLongExposure().catch(() => {});
+                  } else {
+                    startPose();
+                  }
+                } else {
+                  capture();
+                }
+              }}
               disabled={capturing || countdown > 0 || !caps}
             >
-              {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.shutterInner} />}
+              {posing ? (
+                <View style={styles.stopSquare} />
+              ) : capturing ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <View style={styles.shutterInner} />
+              )}
             </Pressable>
             {hasFront ? (
               <Pressable style={styles.flipButton} onPress={() => setFront(!front)}>
@@ -725,15 +790,43 @@ function SettingRow({
   );
 }
 
-/** Zoom courant, abonné seul à la lecture capteur (évite de re-rendre l'écran). */
-function ZoomBadge() {
-  const [zoom, setZoom] = useState<number | null>(null);
+/**
+ * Pastilles de zoom façon app Apple (0,5× / 1× / 2× / 5× selon le matériel).
+ * Abonnées seules à la lecture capteur : la pastille active suit le zoom réel,
+ * y compris pendant un pincement.
+ */
+function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
+  const [zoom, setZoom] = useState(1);
   useEffect(() => {
     const sub = PerseiCamera.addListener('onExposureUpdate', (u) => setZoom(u.zoom));
     return () => sub.remove();
   }, []);
-  if (zoom == null) return null;
-  return <Text style={styles.zoomText}>{`${zoom.toFixed(1).replace(/\.0$/, '')}×`}</Text>;
+  if (!presets.length) return null;
+
+  let activeIndex = 0;
+  for (let i = 0; i < presets.length; i++) {
+    if (zoom >= presets[i].zoom - 0.01) activeIndex = i;
+  }
+  // Zoom affiché relatif au 1× (le videoZoomFactor du device virtuel compte
+  // depuis l'ultra grand-angle).
+  const wideZoom = presets.find((p) => p.factor === 1)?.zoom ?? 1;
+
+  return (
+    <View style={styles.lensRow}>
+      {presets.map((p, i) => (
+        <Pressable
+          key={p.factor}
+          style={[styles.lensPill, i === activeIndex && styles.lensPillActive]}
+          onPress={() => PerseiCamera.setZoom(p.zoom).catch(() => {})}
+        >
+          <Text style={[styles.lensText, i === activeIndex && styles.lensTextActive]}>
+            {formatZoomFactor(p.factor)}
+          </Text>
+        </Pressable>
+      ))}
+      <Text style={styles.zoomText}>{formatZoomFactor(zoom / wideZoom)}</Text>
+    </View>
+  );
 }
 
 /** Bandeau de valeurs : seul composant re-rendu à 10 Hz par la lecture capteur. */
@@ -1174,6 +1267,15 @@ const styles = StyleSheet.create({
   },
   shutterPressed: {
     opacity: 0.6,
+  },
+  poseBar: {
+    gap: 6,
+  },
+  stopSquare: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    backgroundColor: '#ff453a',
   },
   shutterInner: {
     width: 58,
