@@ -337,7 +337,7 @@ final class CameraEngine: NSObject {
     var maxIso = device.activeFormat.maxISO
     var minSeconds = device.activeFormat.minExposureDuration.seconds
     var maxSeconds = device.activeFormat.maxExposureDuration.seconds
-    if !device.constituentDevices.isEmpty, let active = device.activePrimaryConstituentDevice {
+    if !device.constituentDevices.isEmpty, let active = device.activePrimaryConstituent {
       let format = active.activeFormat
       minIso = max(minIso, format.minISO)
       maxIso = min(maxIso, format.maxISO)
