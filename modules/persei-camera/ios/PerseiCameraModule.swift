@@ -1,6 +1,12 @@
 import AVFoundation
 import ExpoModulesCore
 
+struct CaptureOptions: Record {
+  @Field var raw: Bool = false
+  /// Écarts d'exposition (EV) pour un bracketing ; vide = photo simple.
+  @Field var bracketStops: [Double] = []
+}
+
 public class PerseiCameraModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PerseiCamera")
@@ -60,8 +66,8 @@ public class PerseiCameraModule: Module {
       try CameraEngine.shared.setAutoFocus()
     }
 
-    AsyncFunction("setWhiteBalanceKelvin") { (kelvin: Double) in
-      try CameraEngine.shared.setWhiteBalanceKelvin(kelvin)
+    AsyncFunction("setWhiteBalance") { (kelvin: Double, tint: Double) in
+      try CameraEngine.shared.setWhiteBalance(kelvin: kelvin, tint: tint)
     }
 
     AsyncFunction("setAutoWhiteBalance") {
@@ -72,8 +78,32 @@ public class PerseiCameraModule: Module {
       try CameraEngine.shared.setZoom(factor)
     }
 
-    AsyncFunction("capturePhoto") { (raw: Bool, promise: Promise) in
-      CameraEngine.shared.capturePhoto(raw: raw) { result in
+    AsyncFunction("setFlashMode") { (mode: String) in
+      CameraEngine.shared.setFlashMode(mode)
+    }
+
+    AsyncFunction("setTorchLevel") { (level: Double) in
+      try CameraEngine.shared.setTorchLevel(level)
+    }
+
+    AsyncFunction("setQualityPrioritization") { (mode: String) in
+      CameraEngine.shared.setQualityPrioritization(mode)
+    }
+
+    AsyncFunction("setHighResolution") { (enabled: Bool) in
+      CameraEngine.shared.setHighResolution(enabled)
+    }
+
+    AsyncFunction("setLivePhotoEnabled") { (enabled: Bool) in
+      CameraEngine.shared.setLivePhotoEnabled(enabled)
+    }
+
+    AsyncFunction("setDepthEnabled") { (enabled: Bool) in
+      CameraEngine.shared.setDepthEnabled(enabled)
+    }
+
+    AsyncFunction("capturePhoto") { (options: CaptureOptions, promise: Promise) in
+      CameraEngine.shared.capturePhoto(raw: options.raw, bracketStops: options.bracketStops) { result in
         switch result {
         case .success(let uris):
           promise.resolve(uris)

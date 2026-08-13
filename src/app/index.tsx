@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,15 +9,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   CameraCapabilities,
   ExposureUpdate,
+  FlashMode,
   LensId,
   PerseiCamera,
   PerseiCameraView,
+  QualityPrioritization,
 } from '../../modules/persei-camera';
 import { RulerSlider } from '../components/ruler-slider';
 
 const ACCENT = '#ffb800';
 
-const LENS_LABELS: Record<LensId, string> = {
+const BACK_LENS_LABELS: Partial<Record<LensId, string>> = {
   ultraWide: '0,5×',
   wide: '1×',
   telephoto: '3×',
@@ -37,8 +39,10 @@ const SHUTTER_BASE = [
 
 const FOCUS_STOPS = Array.from({ length: 101 }, (_, i) => i / 100);
 const WB_STOPS = Array.from({ length: 56 }, (_, i) => 2500 + i * 100);
+const TINT_STOPS = Array.from({ length: 61 }, (_, i) => -150 + i * 5);
+const TORCH_STOPS = Array.from({ length: 21 }, (_, i) => i / 20);
 
-type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb';
+type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb' | 'tint';
 
 function nearestIndex(values: number[], target: number): number {
   let best = 0;
@@ -61,7 +65,8 @@ function formatFocus(position: number): string {
 export default function CameraScreen() {
   const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [caps, setCaps] = useState<CameraCapabilities | null>(null);
-  const [lens, setLens] = useState<LensId>('wide');
+  const [backLens, setBackLens] = useState<LensId>('wide');
+  const [front, setFront] = useState(false);
   const [raw, setRaw] = useState(false);
   const [live, setLive] = useState<ExposureUpdate | null>(null);
 
@@ -73,14 +78,30 @@ export default function CameraScreen() {
   const [evIdx, setEvIdx] = useState(0);
   const [focusIdx, setFocusIdx] = useState(FOCUS_STOPS.length - 1);
   const [wbIdx, setWbIdx] = useState(30);
+  const [tintIdx, setTintIdx] = useState(30);
+
+  // Réglages secondaires (tiroir).
+  const [showSettings, setShowSettings] = useState(false);
+  const [flash, setFlash] = useState<FlashMode>('off');
+  const [torch, setTorch] = useState(0);
+  const [livePhoto, setLivePhoto] = useState(false);
+  const [depth, setDepth] = useState(false);
+  const [highRes, setHighRes] = useState(true);
+  const [quality, setQuality] = useState<QualityPrioritization>('quality');
+  const [bracketEv, setBracketEv] = useState(0);
+  const [timerSecs, setTimerSecs] = useState(0);
+  const [grid, setGrid] = useState(false);
 
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [thumbUri, setThumbUri] = useState<string | null>(null);
 
   const liveRef = useRef(live);
   liveRef.current = live;
+
+  const lens: LensId = front ? 'front' : backLens;
 
   const isoStops = useMemo(
     () => (caps ? ISO_BASE.filter((v) => v >= caps.minIso && v <= caps.maxIso) : ISO_BASE),
@@ -132,7 +153,7 @@ export default function CameraScreen() {
     })();
   }, [permission, lens]);
 
-  // Un changement d'objectif réinitialise le matériel : on réapplique les modes manuels.
+  // Un changement d'objectif réinitialise le matériel : on réapplique l'état.
   useEffect(() => {
     if (!caps) return;
     if (!exposureAuto) {
@@ -142,17 +163,26 @@ export default function CameraScreen() {
       PerseiCamera.setLensPosition(FOCUS_STOPS[focusIdx]).catch(() => {});
     }
     if (!wbAuto) {
-      PerseiCamera.setWhiteBalanceKelvin(WB_STOPS[wbIdx]).catch(() => {});
+      PerseiCamera.setWhiteBalance(WB_STOPS[wbIdx], TINT_STOPS[tintIdx]).catch(() => {});
     }
+    if (torch > 0 && caps.hasTorch) {
+      PerseiCamera.setTorchLevel(torch).catch(() => {});
+    }
+    PerseiCamera.setFlashMode(flash).catch(() => {});
+    PerseiCamera.setQualityPrioritization(quality).catch(() => {});
+    PerseiCamera.setHighResolution(highRes).catch(() => {});
+    PerseiCamera.setLivePhotoEnabled(livePhoto).catch(() => {});
+    PerseiCamera.setDepthEnabled(depth).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps]);
 
-  const applyManualExposure = useCallback(
-    (iso: number, shutter: number) => {
-      PerseiCamera.setManualExposure(iso, shutter).catch(() => {});
-    },
-    []
-  );
+  const applyManualExposure = useCallback((iso: number, shutter: number) => {
+    PerseiCamera.setManualExposure(iso, shutter).catch(() => {});
+  }, []);
+
+  const applyWb = useCallback((kelvinIdx: number, tIdx: number) => {
+    PerseiCamera.setWhiteBalance(WB_STOPS[kelvinIdx], TINT_STOPS[tIdx]).catch(() => {});
+  }, []);
 
   const enterManualExposure = useCallback(() => {
     const current = liveRef.current;
@@ -172,7 +202,7 @@ export default function CameraScreen() {
       } else if (param === 'focus') {
         setFocusAuto(true);
         PerseiCamera.setAutoFocus().catch(() => {});
-      } else if (param === 'wb') {
+      } else if (param === 'wb' || param === 'tint') {
         setWbAuto(true);
         PerseiCamera.setAutoWhiteBalance().catch(() => {});
       } else if (param === 'ev') {
@@ -209,17 +239,33 @@ export default function CameraScreen() {
         case 'wb':
           setWbAuto(false);
           setWbIdx(index);
-          PerseiCamera.setWhiteBalanceKelvin(WB_STOPS[index]).catch(() => {});
+          applyWb(index, tintIdx);
+          break;
+        case 'tint':
+          setWbAuto(false);
+          setTintIdx(index);
+          applyWb(wbIdx, index);
           break;
       }
     },
-    [exposureAuto, enterManualExposure, applyManualExposure, isoStops, shutterStops, isoIdx, shutterIdx, evStops]
+    [
+      exposureAuto,
+      enterManualExposure,
+      applyManualExposure,
+      applyWb,
+      isoStops,
+      shutterStops,
+      isoIdx,
+      shutterIdx,
+      evStops,
+      wbIdx,
+      tintIdx,
+    ]
   );
 
   const openParam = useCallback(
     (param: ParamKey) => {
       setActiveParam((prev) => (prev === param ? null : param));
-      // Ouvre la molette sur la valeur courante du capteur.
       const current = liveRef.current;
       if (param === 'iso' && exposureAuto) setIsoIdx(nearestIndex(isoStops, current?.iso ?? 100));
       if (param === 'shutter' && exposureAuto)
@@ -259,7 +305,7 @@ export default function CameraScreen() {
     [rememberZoom, applyZoom]
   );
 
-  const capture = useCallback(async () => {
+  const shoot = useCallback(async () => {
     setCapturing(true);
     try {
       const media = await MediaLibrary.requestPermissionsAsync();
@@ -267,7 +313,10 @@ export default function CameraScreen() {
         setToast('Accès photothèque refusé');
         return;
       }
-      const uris = await PerseiCamera.capturePhoto(raw && (caps?.supportsRaw ?? false));
+      const useRaw = raw && (caps?.supportsRaw ?? false);
+      const bracketStops =
+        !useRaw && bracketEv > 0 ? [-bracketEv, 0, bracketEv] : undefined;
+      const uris = await PerseiCamera.capturePhoto({ raw: useRaw, bracketStops });
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
       const heic = uris.find((u) => u.endsWith('.heic')) ?? uris[0];
       if (heic) setThumbUri(heic);
@@ -276,7 +325,24 @@ export default function CameraScreen() {
     } finally {
       setCapturing(false);
     }
-  }, [raw, caps]);
+  }, [raw, caps, bracketEv]);
+
+  const capture = useCallback(() => {
+    if (timerSecs === 0) {
+      shoot();
+      return;
+    }
+    let remaining = timerSecs;
+    setCountdown(remaining);
+    const interval = setInterval(() => {
+      remaining -= 1;
+      setCountdown(remaining);
+      if (remaining <= 0) {
+        clearInterval(interval);
+        shoot();
+      }
+    }, 1000);
+  }, [timerSecs, shoot]);
 
   if (permission === 'denied') {
     return (
@@ -288,7 +354,9 @@ export default function CameraScreen() {
     );
   }
 
-  const zoomLabel = live ? `${(live.zoom ?? 1).toFixed(1).replace(/\.0$/, '')}×` : null;
+  const zoomLabel = live && !front ? `${(live.zoom ?? 1).toFixed(1).replace(/\.0$/, '')}×` : null;
+  const backLenses = (caps?.lenses ?? []).filter((l) => l !== 'front');
+  const hasFront = (caps?.lenses ?? []).includes('front');
 
   const chips: { key: ParamKey; label: string; value: string; manual: boolean }[] = [
     {
@@ -300,7 +368,9 @@ export default function CameraScreen() {
     {
       key: 'shutter',
       label: 'VITESSE',
-      value: exposureAuto ? formatShutter(live?.shutter ?? 0) : formatShutter(shutterStops[shutterIdx]),
+      value: exposureAuto
+        ? formatShutter(live?.shutter ?? 0)
+        : formatShutter(shutterStops[shutterIdx]),
       manual: !exposureAuto,
     },
     {
@@ -323,6 +393,12 @@ export default function CameraScreen() {
         : `${WB_STOPS[wbIdx]}K`,
       manual: !wbAuto,
     },
+    {
+      key: 'tint',
+      label: 'TEINTE',
+      value: wbAuto ? 'A' : `${TINT_STOPS[tintIdx] > 0 ? '+' : ''}${TINT_STOPS[tintIdx]}`,
+      manual: !wbAuto,
+    },
   ];
 
   const rulerFor = (param: ParamKey): { count: number; index: number } => {
@@ -337,13 +413,15 @@ export default function CameraScreen() {
         return { count: FOCUS_STOPS.length, index: focusIdx };
       case 'wb':
         return { count: WB_STOPS.length, index: wbIdx };
+      case 'tint':
+        return { count: TINT_STOPS.length, index: tintIdx };
     }
   };
 
   const paramIsAuto = (param: ParamKey): boolean => {
     if (param === 'iso' || param === 'shutter') return exposureAuto;
     if (param === 'focus') return focusAuto;
-    if (param === 'wb') return wbAuto;
+    if (param === 'wb' || param === 'tint') return wbAuto;
     return (evStops[evIdx] ?? 0) === 0;
   };
 
@@ -353,32 +431,63 @@ export default function CameraScreen() {
         <PerseiCameraView style={StyleSheet.absoluteFill} />
       </GestureDetector>
 
+      {grid ? (
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          <View style={[styles.gridLine, { left: '33.33%', width: 1, height: '100%' }]} />
+          <View style={[styles.gridLine, { left: '66.66%', width: 1, height: '100%' }]} />
+          <View style={[styles.gridLine, { top: '33.33%', height: 1, width: '100%' }]} />
+          <View style={[styles.gridLine, { top: '66.66%', height: 1, width: '100%' }]} />
+        </View>
+      ) : null}
+
+      {countdown > 0 ? (
+        <View pointerEvents="none" style={styles.countdownOverlay}>
+          <Text style={styles.countdownText}>{countdown}</Text>
+        </View>
+      ) : null}
+
       <SafeAreaView style={styles.overlay} pointerEvents="box-none">
         <View style={styles.topBar}>
-          <View style={styles.lensRow}>
-            {(caps?.lenses ?? []).map((id) => (
+          {!front ? (
+            <View style={styles.lensRow}>
+              {backLenses.map((id) => (
+                <Pressable
+                  key={id}
+                  style={[styles.lensPill, backLens === id && styles.lensPillActive]}
+                  onPress={() => setBackLens(id)}
+                >
+                  <Text style={[styles.lensText, backLens === id && styles.lensTextActive]}>
+                    {BACK_LENS_LABELS[id] ?? id}
+                  </Text>
+                </Pressable>
+              ))}
+              {zoomLabel ? <Text style={styles.zoomText}>{zoomLabel}</Text> : null}
+            </View>
+          ) : (
+            <View style={styles.lensRow}>
+              <Text style={[styles.lensText, styles.lensTextActive, { paddingHorizontal: 10 }]}>
+                Selfie
+              </Text>
+            </View>
+          )}
+          <View style={styles.topRight}>
+            {caps?.supportsRaw && !front ? (
               <Pressable
-                key={id}
-                style={[styles.lensPill, lens === id && styles.lensPillActive]}
-                onPress={() => setLens(id)}
+                style={[styles.rawBadge, raw && styles.rawBadgeActive]}
+                onPress={() => setRaw(!raw)}
               >
-                <Text style={[styles.lensText, lens === id && styles.lensTextActive]}>
-                  {LENS_LABELS[id]}
+                <Text style={[styles.rawText, raw && styles.rawTextActive]}>
+                  {caps.supportsProRaw ? 'ProRAW' : 'RAW'}
                 </Text>
               </Pressable>
-            ))}
-            {zoomLabel ? <Text style={styles.zoomText}>{zoomLabel}</Text> : null}
-          </View>
-          {caps?.supportsRaw ? (
+            ) : null}
             <Pressable
-              style={[styles.rawBadge, raw && styles.rawBadgeActive]}
-              onPress={() => setRaw(!raw)}
+              style={[styles.rawBadge, showSettings && styles.rawBadgeActive]}
+              onPress={() => setShowSettings(!showSettings)}
             >
-              <Text style={[styles.rawText, raw && styles.rawTextActive]}>
-                {caps.supportsProRaw ? 'ProRAW' : 'RAW'}
-              </Text>
+              <Text style={[styles.rawText, showSettings && styles.rawTextActive]}>⚙︎</Text>
             </Pressable>
-          ) : null}
+          </View>
         </View>
 
         <View style={styles.bottomArea}>
@@ -388,6 +497,117 @@ export default function CameraScreen() {
                 {toast}
               </Text>
             </View>
+          ) : null}
+
+          {showSettings ? (
+            <ScrollView style={styles.settingsPanel} contentContainerStyle={styles.settingsContent}>
+              {caps?.hasFlash ? (
+                <SettingRow label="Flash">
+                  <Segmented
+                    options={['off', 'auto', 'on']}
+                    labels={['Off', 'Auto', 'On']}
+                    value={flash}
+                    onChange={(v) => {
+                      setFlash(v as FlashMode);
+                      PerseiCamera.setFlashMode(v as FlashMode).catch(() => {});
+                    }}
+                  />
+                </SettingRow>
+              ) : null}
+              {caps?.hasTorch ? (
+                <SettingRow label={`Torche ${torch > 0 ? `${Math.round(torch * 100)}%` : 'off'}`}>
+                  <RulerSlider
+                    count={TORCH_STOPS.length}
+                    index={nearestIndex(TORCH_STOPS, torch)}
+                    onChange={(i) => {
+                      setTorch(TORCH_STOPS[i]);
+                      PerseiCamera.setTorchLevel(TORCH_STOPS[i]).catch(() => {});
+                    }}
+                  />
+                </SettingRow>
+              ) : null}
+              {caps && caps.maxMegapixels > 20 ? (
+                <SettingRow label="Résolution">
+                  <Segmented
+                    options={['12', '48']}
+                    labels={['12 MP', `${Math.round(caps.maxMegapixels)} MP`]}
+                    value={highRes ? '48' : '12'}
+                    onChange={(v) => {
+                      const enabled = v === '48';
+                      setHighRes(enabled);
+                      PerseiCamera.setHighResolution(enabled).catch(() => {});
+                    }}
+                  />
+                </SettingRow>
+              ) : null}
+              <SettingRow label="Qualité">
+                <Segmented
+                  options={['speed', 'balanced', 'quality']}
+                  labels={['Vitesse', 'Équilibré', 'Max']}
+                  value={quality}
+                  onChange={(v) => {
+                    setQuality(v as QualityPrioritization);
+                    PerseiCamera.setQualityPrioritization(v as QualityPrioritization).catch(
+                      () => {}
+                    );
+                  }}
+                />
+              </SettingRow>
+              {caps && caps.maxBracketCount >= 3 ? (
+                <SettingRow label="Bracketing">
+                  <Segmented
+                    options={['0', '1', '2']}
+                    labels={['Off', '±1 EV', '±2 EV']}
+                    value={`${bracketEv}`}
+                    onChange={(v) => setBracketEv(Number(v))}
+                  />
+                </SettingRow>
+              ) : null}
+              {caps?.supportsLivePhoto ? (
+                <SettingRow label="Live Photo (vidéo séparée)">
+                  <Segmented
+                    options={['off', 'on']}
+                    labels={['Off', 'On']}
+                    value={livePhoto ? 'on' : 'off'}
+                    onChange={(v) => {
+                      const enabled = v === 'on';
+                      setLivePhoto(enabled);
+                      PerseiCamera.setLivePhotoEnabled(enabled).catch(() => {});
+                    }}
+                  />
+                </SettingRow>
+              ) : null}
+              {caps?.supportsDepth ? (
+                <SettingRow label="Profondeur">
+                  <Segmented
+                    options={['off', 'on']}
+                    labels={['Off', 'On']}
+                    value={depth ? 'on' : 'off'}
+                    onChange={(v) => {
+                      const enabled = v === 'on';
+                      setDepth(enabled);
+                      PerseiCamera.setDepthEnabled(enabled).catch(() => {});
+                    }}
+                  />
+                </SettingRow>
+              ) : null}
+              <SettingRow label="Retardateur">
+                <Segmented
+                  options={['0', '3', '10']}
+                  labels={['Off', '3 s', '10 s']}
+                  value={`${timerSecs}`}
+                  onChange={(v) => setTimerSecs(Number(v))}
+                />
+              </SettingRow>
+              <SettingRow label="Grille">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={grid ? 'on' : 'off'}
+                  onChange={(v) => setGrid(v === 'on')}
+                />
+              </SettingRow>
+            </ScrollView>
           ) : null}
 
           {activeParam ? (
@@ -400,9 +620,7 @@ export default function CameraScreen() {
                 style={[styles.autoButton, paramIsAuto(activeParam) && styles.autoButtonActive]}
                 onPress={() => paramToAuto(activeParam)}
               >
-                <Text
-                  style={[styles.autoText, paramIsAuto(activeParam) && styles.autoTextActive]}
-                >
+                <Text style={[styles.autoText, paramIsAuto(activeParam) && styles.autoTextActive]}>
                   AUTO
                 </Text>
               </Pressable>
@@ -433,18 +651,57 @@ export default function CameraScreen() {
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
               onPress={capture}
-              disabled={capturing || !caps}
+              disabled={capturing || countdown > 0 || !caps}
             >
-              {capturing ? (
-                <ActivityIndicator color="#000" />
-              ) : (
-                <View style={styles.shutterInner} />
-              )}
+              {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.shutterInner} />}
             </Pressable>
-            <View style={styles.thumbBox} />
+            {hasFront ? (
+              <Pressable style={styles.flipButton} onPress={() => setFront(!front)}>
+                <Text style={styles.flipText}>⟳</Text>
+              </Pressable>
+            ) : (
+              <View style={styles.thumbBox} />
+            )}
           </View>
         </View>
       </SafeAreaView>
+    </View>
+  );
+}
+
+function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.settingRow}>
+      <Text style={styles.settingLabel}>{label}</Text>
+      <View style={styles.settingControl}>{children}</View>
+    </View>
+  );
+}
+
+function Segmented({
+  options,
+  labels,
+  value,
+  onChange,
+}: {
+  options: string[];
+  labels: string[];
+  value: string;
+  onChange(next: string): void;
+}) {
+  return (
+    <View style={styles.segmented}>
+      {options.map((opt, i) => (
+        <Pressable
+          key={opt}
+          style={[styles.segment, value === opt && styles.segmentActive]}
+          onPress={() => onChange(opt)}
+        >
+          <Text style={[styles.segmentText, value === opt && styles.segmentTextActive]}>
+            {labels[i]}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -470,12 +727,35 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
   },
+  gridLine: {
+    position: 'absolute',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  countdownOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  countdownText: {
+    color: '#fff',
+    fontSize: 96,
+    fontWeight: '200',
+    fontVariant: ['tabular-nums'],
+  },
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingTop: 6,
+  },
+  topRight: {
+    flexDirection: 'row',
+    gap: 6,
   },
   lensRow: {
     flexDirection: 'row',
@@ -543,6 +823,49 @@ const styles = StyleSheet.create({
     color: '#ffd60a',
     fontSize: 12,
     textAlign: 'center',
+  },
+  settingsPanel: {
+    maxHeight: 300,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    borderRadius: 14,
+  },
+  settingsContent: {
+    padding: 10,
+    gap: 10,
+  },
+  settingRow: {
+    gap: 6,
+  },
+  settingLabel: {
+    color: '#9b9b9b',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
+  settingControl: {},
+  segmented: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 10,
+    padding: 3,
+    gap: 3,
+  },
+  segment: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  segmentActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+  },
+  segmentText: {
+    color: '#9b9b9b',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  segmentTextActive: {
+    color: ACCENT,
   },
   rulerPanel: {
     flexDirection: 'row',
@@ -620,6 +943,18 @@ const styles = StyleSheet.create({
   thumb: {
     width: '100%',
     height: '100%',
+  },
+  flipButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  flipText: {
+    color: '#e8e8e8',
+    fontSize: 20,
   },
   shutterButton: {
     width: 72,

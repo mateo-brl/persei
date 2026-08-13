@@ -15,9 +15,10 @@ enum CameraEngineError: Error, LocalizedError {
   }
 }
 
-/// Owns the AVCaptureSession and exposes full manual control over the camera:
-/// custom exposure (ISO + shutter duration), manual lens position, white
-/// balance in kelvin, lens switching, and RAW/ProRAW capture.
+/// Owns the AVCaptureSession and exposes every publicly controllable camera
+/// capability: custom exposure (ISO + shutter), manual focus, white balance
+/// (kelvin + tint), lens/position switching, zoom, flash/torch, Live Photos,
+/// depth delivery, exposure bracketing and RAW/ProRAW capture.
 final class CameraEngine: NSObject {
   static let shared = CameraEngine()
 
@@ -31,12 +32,18 @@ final class CameraEngine: NSObject {
   // Keeps capture delegates alive until their capture completes.
   private var inFlightCaptures: [Int64: PhotoCaptureDelegate] = [:]
 
+  // Préférences de capture (appliquées à chaque photo).
+  private var flashMode: AVCaptureDevice.FlashMode = .off
+  private var preferHighResolution = true
+  private var livePhotoEnabled = false
+  private var depthEnabled = false
+
   /// Live sensor readout pushed to JS (set by the module while observed).
   var onExposureUpdate: (([String: Any]) -> Void)?
   private var observations: [NSKeyValueObservation] = []
   private var lastEmit = Date.distantPast
 
-  private static let lensDeviceTypes: [String: AVCaptureDevice.DeviceType] = [
+  private static let backLensDeviceTypes: [String: AVCaptureDevice.DeviceType] = [
     "ultraWide": .builtInUltraWideCamera,
     "wide": .builtInWideAngleCamera,
     "telephoto": .builtInTelephotoCamera,
@@ -66,11 +73,17 @@ final class CameraEngine: NSObject {
     }
   }
 
-  private func configureSession(lens: String) throws -> [String: Any] {
-    let deviceType = Self.lensDeviceTypes[lens] ?? .builtInWideAngleCamera
-    guard let newDevice = AVCaptureDevice.default(deviceType, for: .video, position: .back)
+  private func resolveDevice(lens: String) -> AVCaptureDevice? {
+    if lens == "front" {
+      return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+    }
+    let deviceType = Self.backLensDeviceTypes[lens] ?? .builtInWideAngleCamera
+    return AVCaptureDevice.default(deviceType, for: .video, position: .back)
       ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
-    else {
+  }
+
+  private func configureSession(lens: String) throws -> [String: Any] {
+    guard let newDevice = resolveDevice(lens: lens) else {
       throw CameraEngineError.deviceUnavailable
     }
 
@@ -100,16 +113,74 @@ final class CameraEngine: NSObject {
     }
 
     photoOutput.maxPhotoQualityPrioritization = .quality
-    if let maxDimensions = newDevice.activeFormat.supportedMaxPhotoDimensions.last {
-      photoOutput.maxPhotoDimensions = maxDimensions
-    }
+    applyResolutionPreference(for: newDevice)
     if photoOutput.isAppleProRAWSupported {
       photoOutput.isAppleProRAWEnabled = true
+    }
+    if photoOutput.isLivePhotoCaptureSupported {
+      photoOutput.isLivePhotoCaptureEnabled = livePhotoEnabled
+    }
+    if photoOutput.isDepthDataDeliverySupported {
+      photoOutput.isDepthDataDeliveryEnabled = depthEnabled
+    }
+    if #available(iOS 17.0, *) {
+      if photoOutput.isZeroShutterLagSupported {
+        photoOutput.isZeroShutterLagEnabled = true
+      }
+      if photoOutput.isResponsiveCaptureSupported {
+        photoOutput.isResponsiveCaptureEnabled = true
+      }
+      if photoOutput.isFastCapturePrioritizationSupported {
+        photoOutput.isFastCapturePrioritizationEnabled = true
+      }
     }
 
     session.commitConfiguration()
     startObserving(newDevice)
     return capabilities(of: newDevice)
+  }
+
+  private func applyResolutionPreference(for device: AVCaptureDevice) {
+    let dimensions = device.activeFormat.supportedMaxPhotoDimensions
+    guard !dimensions.isEmpty else { return }
+    photoOutput.maxPhotoDimensions = preferHighResolution ? dimensions.last! : dimensions.first!
+  }
+
+  private func capabilities(of device: AVCaptureDevice) -> [String: Any] {
+    let format = device.activeFormat
+    let backDiscovery = AVCaptureDevice.DiscoverySession(
+      deviceTypes: [.builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
+      mediaType: .video,
+      position: .back
+    )
+    var lenses = backDiscovery.devices.compactMap { available -> String? in
+      Self.backLensDeviceTypes.first { $0.value == available.deviceType }?.key
+    }
+    if AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil {
+      lenses.append("front")
+    }
+    let maxDimensions = format.supportedMaxPhotoDimensions.last
+    let maxMegapixels = maxDimensions.map { Double($0.width) * Double($0.height) / 1_000_000.0 } ?? 12.0
+
+    return [
+      "minIso": Double(format.minISO),
+      "maxIso": Double(format.maxISO),
+      "minShutter": format.minExposureDuration.seconds,
+      "maxShutter": format.maxExposureDuration.seconds,
+      "minExposureBias": Double(device.minExposureTargetBias),
+      "maxExposureBias": Double(device.maxExposureTargetBias),
+      "supportsRaw": !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
+      "supportsProRaw": photoOutput.isAppleProRAWSupported,
+      "maxMegapixels": maxMegapixels,
+      "lenses": lenses,
+      "minZoom": Double(device.minAvailableVideoZoomFactor),
+      "maxZoom": Double(device.maxAvailableVideoZoomFactor),
+      "hasFlash": device.hasFlash,
+      "hasTorch": device.hasTorch,
+      "supportsLivePhoto": photoOutput.isLivePhotoCaptureSupported,
+      "supportsDepth": photoOutput.isDepthDataDeliverySupported,
+      "maxBracketCount": Int(photoOutput.maxBracketedCapturePhotoCount),
+    ]
   }
 
   // MARK: - Live readout
@@ -149,35 +220,6 @@ final class CameraEngine: NSObject {
       "whiteBalanceKelvin": kelvin,
       "zoom": Double(device.videoZoomFactor),
     ])
-  }
-
-  private func capabilities(of device: AVCaptureDevice) -> [String: Any] {
-    let format = device.activeFormat
-    let discovery = AVCaptureDevice.DiscoverySession(
-      deviceTypes: [.builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
-      mediaType: .video,
-      position: .back
-    )
-    let lenses = discovery.devices.compactMap { available -> String? in
-      Self.lensDeviceTypes.first { $0.value == available.deviceType }?.key
-    }
-    let maxDimensions = format.supportedMaxPhotoDimensions.last
-    let maxMegapixels = maxDimensions.map { Double($0.width) * Double($0.height) / 1_000_000.0 } ?? 12.0
-
-    return [
-      "minIso": Double(format.minISO),
-      "maxIso": Double(format.maxISO),
-      "minShutter": format.minExposureDuration.seconds,
-      "maxShutter": format.maxExposureDuration.seconds,
-      "minExposureBias": Double(device.minExposureTargetBias),
-      "maxExposureBias": Double(device.maxExposureTargetBias),
-      "supportsRaw": !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
-      "supportsProRaw": photoOutput.isAppleProRAWSupported,
-      "maxMegapixels": maxMegapixels,
-      "lenses": lenses,
-      "minZoom": Double(device.minAvailableVideoZoomFactor),
-      "maxZoom": Double(device.maxAvailableVideoZoomFactor),
-    ]
   }
 
   // MARK: - Manual controls
@@ -244,11 +286,11 @@ final class CameraEngine: NSObject {
     }
   }
 
-  func setWhiteBalanceKelvin(_ kelvin: Double) throws {
+  func setWhiteBalance(kelvin: Double, tint: Double) throws {
     try withLockedDevice { device in
       let temperatureAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
         temperature: Float(kelvin),
-        tint: 0
+        tint: Float(tint)
       )
       var gains = device.deviceWhiteBalanceGains(for: temperatureAndTint)
       let maxGain = device.maxWhiteBalanceGain
@@ -296,16 +338,92 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// 0 = éteinte, sinon intensité 0-1.
+  func setTorchLevel(_ level: Double) throws {
+    try withLockedDevice { device in
+      guard device.hasTorch else { return }
+      if level <= 0 {
+        device.torchMode = .off
+      } else {
+        try device.setTorchModeOn(level: Float(min(max(level, 0.01), 1.0)))
+      }
+    }
+  }
+
+  func setFlashMode(_ mode: String) {
+    sessionQueue.async {
+      switch mode {
+      case "on": self.flashMode = .on
+      case "auto": self.flashMode = .auto
+      default: self.flashMode = .off
+      }
+    }
+  }
+
+  func setQualityPrioritization(_ mode: String) {
+    sessionQueue.async {
+      self.session.beginConfiguration()
+      switch mode {
+      case "speed": self.photoOutput.maxPhotoQualityPrioritization = .speed
+      case "balanced": self.photoOutput.maxPhotoQualityPrioritization = .balanced
+      default: self.photoOutput.maxPhotoQualityPrioritization = .quality
+      }
+      self.session.commitConfiguration()
+    }
+  }
+
+  func setHighResolution(_ enabled: Bool) {
+    sessionQueue.async {
+      self.preferHighResolution = enabled
+      guard let device = self.device else { return }
+      self.session.beginConfiguration()
+      self.applyResolutionPreference(for: device)
+      self.session.commitConfiguration()
+    }
+  }
+
+  func setLivePhotoEnabled(_ enabled: Bool) {
+    sessionQueue.async {
+      self.livePhotoEnabled = enabled
+      self.session.beginConfiguration()
+      if self.photoOutput.isLivePhotoCaptureSupported {
+        self.photoOutput.isLivePhotoCaptureEnabled = enabled
+      }
+      self.session.commitConfiguration()
+    }
+  }
+
+  func setDepthEnabled(_ enabled: Bool) {
+    sessionQueue.async {
+      self.depthEnabled = enabled
+      self.session.beginConfiguration()
+      if self.photoOutput.isDepthDataDeliverySupported {
+        self.photoOutput.isDepthDataDeliveryEnabled = enabled
+      }
+      self.session.commitConfiguration()
+    }
+  }
+
   // MARK: - Capture
 
-  func capturePhoto(raw: Bool, completion: @escaping (Result<[String], Error>) -> Void) {
+  func capturePhoto(
+    raw: Bool,
+    bracketStops: [Double],
+    completion: @escaping (Result<[String], Error>) -> Void
+  ) {
     sessionQueue.async {
       guard self.session.isRunning else {
         completion(.failure(CameraEngineError.notRunning))
         return
       }
 
-      let settings = self.makePhotoSettings(raw: raw)
+      let settings: AVCapturePhotoSettings
+      if !raw, bracketStops.count >= 2, self.photoOutput.maxBracketedCapturePhotoCount >= bracketStops.count {
+        settings = self.makeBracketSettings(stops: bracketStops)
+      } else {
+        settings = self.makePhotoSettings(raw: raw)
+      }
+
       let captureId = settings.uniqueID
       let delegate = PhotoCaptureDelegate { [weak self] result in
         self?.sessionQueue.async {
@@ -318,9 +436,39 @@ final class CameraEngine: NSObject {
     }
   }
 
+  private func hevcFormat() -> [String: Any]? {
+    photoOutput.availablePhotoCodecTypes.contains(.hevc)
+      ? [AVVideoCodecKey: AVVideoCodecType.hevc]
+      : nil
+  }
+
+  private func makeBracketSettings(stops: [Double]) -> AVCapturePhotoBracketSettings {
+    let bracketed = stops.map {
+      AVCaptureAutoExposureBracketedStillImageSettings.autoExposureSettings(
+        exposureTargetBias: Float($0)
+      )
+    }
+    let settings: AVCapturePhotoBracketSettings
+    if let format = hevcFormat() {
+      settings = AVCapturePhotoBracketSettings(
+        rawPixelFormatType: 0,
+        processedFormat: format,
+        bracketedSettings: bracketed
+      )
+    } else {
+      settings = AVCapturePhotoBracketSettings(
+        rawPixelFormatType: 0,
+        processedFormat: nil,
+        bracketedSettings: bracketed
+      )
+    }
+    // Pas de maxPhotoDimensions ici : les brackets ne sont pas garantis en
+    // haute résolution (servis en 12 MP en pratique, exception sinon).
+    return settings
+  }
+
   private func makePhotoSettings(raw: Bool) -> AVCapturePhotoSettings {
-    let hevcAvailable = photoOutput.availablePhotoCodecTypes.contains(.hevc)
-    let processedFormat: [String: Any]? = hevcAvailable ? [AVVideoCodecKey: AVVideoCodecType.hevc] : nil
+    let processedFormat = hevcFormat()
 
     let settings: AVCapturePhotoSettings
     let rawTypes = photoOutput.availableRawPhotoPixelFormatTypes
@@ -341,12 +489,25 @@ final class CameraEngine: NSObject {
 
     settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
     settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
+
+    if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
+      settings.flashMode = flashMode
+    }
+    // Live Photo et profondeur : incompatibles avec le RAW.
+    if !raw, photoOutput.isLivePhotoCaptureEnabled {
+      settings.livePhotoMovieFileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("persei-live-\(UUID().uuidString).mov")
+    }
+    if !raw, photoOutput.isDepthDataDeliveryEnabled {
+      settings.isDepthDataDeliveryEnabled = true
+      settings.embedsDepthDataInPhoto = true
+    }
     return settings
   }
 }
 
-/// Collects every representation (RAW + processed) of a single capture and
-/// resolves once the whole capture finishes.
+/// Collects every representation (RAW + processed + Live Photo movie) of a
+/// single capture and resolves once the whole capture finishes.
 private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
   private let completion: (Result<[String], Error>) -> Void
   private var fileUris: [String] = []
@@ -380,6 +541,21 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     } catch {
       if firstError == nil { firstError = error }
     }
+  }
+
+  func photoOutput(
+    _ output: AVCapturePhotoOutput,
+    didFinishProcessingLivePhotoToMovieFileAt outputFileURL: URL,
+    duration: CMTime,
+    photoDisplayTime: CMTime,
+    resolvedSettings: AVCaptureResolvedPhotoSettings,
+    error: Error?
+  ) {
+    if let error {
+      if firstError == nil { firstError = error }
+      return
+    }
+    fileUris.append(outputFileURL.absoluteString)
   }
 
   func photoOutput(

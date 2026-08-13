@@ -1,6 +1,13 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import type { CameraCapabilities, LensId, PerseiCameraEvents } from './PerseiCamera.types';
+import type {
+  CameraCapabilities,
+  CaptureOptions,
+  FlashMode,
+  LensId,
+  PerseiCameraEvents,
+  QualityPrioritization,
+} from './PerseiCamera.types';
 
 declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   requestPermission(): Promise<boolean>;
@@ -13,11 +20,20 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   /** Position de mise au point manuelle, 0 (proche) à 1 (infini). */
   setLensPosition(position: number): Promise<void>;
   setAutoFocus(): Promise<void>;
-  setWhiteBalanceKelvin(kelvin: number): Promise<void>;
+  /** Balance des blancs verrouillée : température (K) + teinte (vert-magenta, ~±150). */
+  setWhiteBalance(kelvin: number, tint: number): Promise<void>;
   setAutoWhiteBalance(): Promise<void>;
   setZoom(factor: number): Promise<void>;
-  /** Capture une photo, renvoie les URIs des fichiers produits (HEIC, et DNG si raw). */
-  capturePhoto(raw: boolean): Promise<string[]>;
+  setFlashMode(mode: FlashMode): Promise<void>;
+  /** 0 = éteinte, sinon intensité 0-1. */
+  setTorchLevel(level: number): Promise<void>;
+  setQualityPrioritization(mode: QualityPrioritization): Promise<void>;
+  /** true = résolution maximale (48 MP si dispo), false = 12 MP. */
+  setHighResolution(enabled: boolean): Promise<void>;
+  setLivePhotoEnabled(enabled: boolean): Promise<void>;
+  setDepthEnabled(enabled: boolean): Promise<void>;
+  /** Capture ; renvoie les URIs produits (HEIC, DNG si raw, MOV si Live Photo). */
+  capturePhoto(options: CaptureOptions): Promise<string[]>;
 }
 
 export default requireNativeModule<PerseiCameraModule>('PerseiCamera');

@@ -1,4 +1,8 @@
-export type LensId = 'ultraWide' | 'wide' | 'telephoto';
+export type LensId = 'ultraWide' | 'wide' | 'telephoto' | 'front';
+
+export type FlashMode = 'off' | 'auto' | 'on';
+
+export type QualityPrioritization = 'speed' | 'balanced' | 'quality';
 
 export interface CameraCapabilities {
   minIso: number;
@@ -15,6 +19,11 @@ export interface CameraCapabilities {
   lenses: LensId[];
   minZoom: number;
   maxZoom: number;
+  hasFlash: boolean;
+  hasTorch: boolean;
+  supportsLivePhoto: boolean;
+  supportsDepth: boolean;
+  maxBracketCount: number;
 }
 
 /** Lecture temps réel du capteur (~10 Hz), y compris en modes auto. */
@@ -25,6 +34,12 @@ export interface ExposureUpdate {
   exposureBias: number;
   whiteBalanceKelvin: number;
   zoom: number;
+}
+
+export interface CaptureOptions {
+  raw?: boolean;
+  /** Écarts d'exposition (EV) pour un bracketing ; vide/absent = photo simple. */
+  bracketStops?: number[];
 }
 
 export type PerseiCameraEvents = {
