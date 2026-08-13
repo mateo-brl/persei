@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { SymbolView } from 'expo-symbols';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -691,13 +692,21 @@ export default function CameraScreen() {
               style={[styles.rawBadge, showPresets && styles.rawBadgeActive]}
               onPress={() => setShowPresets(!showPresets)}
             >
-              <Text style={[styles.rawText, showPresets && styles.rawTextActive]}>✨</Text>
+              <SymbolView
+                name="sparkles"
+                size={15}
+                tintColor={showPresets ? ACCENT : '#9b9b9b'}
+              />
             </Pressable>
             <Pressable
               style={[styles.rawBadge, nightVision && styles.rawBadgeActive]}
               onPress={() => setNightVision(!nightVision)}
             >
-              <Text style={[styles.rawText, nightVision && styles.rawTextActive]}>🌙</Text>
+              <SymbolView
+                name="moon.stars.fill"
+                size={15}
+                tintColor={nightVision ? ACCENT : '#9b9b9b'}
+              />
             </Pressable>
             {caps?.supportsRaw && !front ? (
               <Pressable
@@ -711,7 +720,11 @@ export default function CameraScreen() {
               style={[styles.rawBadge, showSettings && styles.rawBadgeActive]}
               onPress={() => setShowSettings(!showSettings)}
             >
-              <Text style={[styles.rawText, showSettings && styles.rawTextActive]}>⚙︎</Text>
+              <SymbolView
+                name="gearshape.fill"
+                size={15}
+                tintColor={showSettings ? ACCENT : '#9b9b9b'}
+              />
             </Pressable>
           </View>
         </View>
@@ -1003,7 +1016,11 @@ export default function CameraScreen() {
             </Pressable>
             {hasFront ? (
               <Pressable style={styles.flipButton} onPress={() => setFront(!front)}>
-                <Text style={styles.flipText}>⟳</Text>
+                <SymbolView
+                  name="arrow.triangle.2.circlepath.camera"
+                  size={19}
+                  tintColor="#e8e8e8"
+                />
               </Pressable>
             ) : (
               <View style={styles.thumbBox} />
@@ -1296,6 +1313,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
     borderWidth: 1,
     borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 34,
   },
   rawBadgeActive: {
     borderColor: ACCENT,
