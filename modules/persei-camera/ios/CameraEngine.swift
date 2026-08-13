@@ -528,12 +528,16 @@ final class CameraEngine: NSObject {
     // Rendu final hors de la sessionQueue (peut prendre du temps), puis
     // retour en exposition auto.
     sessionQueue.async {
-      if let device = self.device {
-        try? device.lockForConfiguration()
+      guard let device = self.device else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
         if device.isExposureModeSupported(.continuousAutoExposure) {
           device.exposureMode = .continuousAutoExposure
         }
-        device.unlockForConfiguration()
+      } catch {
+        // Verrou refusé : on laisse l'exposition telle quelle plutôt que de
+        // toucher un device non verrouillé.
       }
     }
     DispatchQueue.global(qos: .userInitiated).async {

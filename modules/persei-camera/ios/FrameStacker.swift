@@ -9,7 +9,11 @@ final class FrameStacker {
   private let wantsMax: Bool
   private var sumAccumulator: CIImageAccumulator?
   private var maxAccumulator: CIImageAccumulator?
-  private var frameCount = 0
+  // Compteurs par accumulateur : si une allocation échoue au début puis
+  // réussit plus tard, la moyenne doit diviser par les trames réellement
+  // sommées, pas par le total capturé.
+  private var sumFrameCount = 0
+  private var maxFrameCount = 0
   private let ciContext = CIContext()
 
   init(mode: String) {
@@ -27,9 +31,11 @@ final class FrameStacker {
           parameters: [kCIInputBackgroundImageKey: accumulator.image()]
         )
         accumulator.setImage(summed)
-      } else {
-        sumAccumulator = CIImageAccumulator(extent: frame.extent, format: .RGBAh)
-        sumAccumulator?.setImage(frame)
+        sumFrameCount += 1
+      } else if let accumulator = CIImageAccumulator(extent: frame.extent, format: .RGBAh) {
+        accumulator.setImage(frame)
+        sumAccumulator = accumulator
+        sumFrameCount = 1
       }
     }
 
@@ -40,25 +46,25 @@ final class FrameStacker {
           parameters: [kCIInputBackgroundImageKey: accumulator.image()]
         )
         accumulator.setImage(maxed)
-      } else {
-        maxAccumulator = CIImageAccumulator(extent: frame.extent, format: .RGBAh)
-        maxAccumulator?.setImage(frame)
+        maxFrameCount += 1
+      } else if let accumulator = CIImageAccumulator(extent: frame.extent, format: .RGBAh) {
+        accumulator.setImage(frame)
+        maxAccumulator = accumulator
+        maxFrameCount = 1
       }
     }
-
-    frameCount += 1
   }
 
   func finalize() -> Result<[String], Error> {
-    guard frameCount > 0 else {
+    guard sumFrameCount > 0 || maxFrameCount > 0 else {
       return .failure(CameraEngineError.captureFailed("no frames stacked"))
     }
 
     var uris: [String] = []
     let colorSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
 
-    if let accumulator = sumAccumulator {
-      let scale = CGFloat(1) / CGFloat(frameCount)
+    if let accumulator = sumAccumulator, sumFrameCount > 0 {
+      let scale = CGFloat(1) / CGFloat(sumFrameCount)
       let mean = accumulator.image().applyingFilter("CIColorMatrix", parameters: [
         "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
         "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
