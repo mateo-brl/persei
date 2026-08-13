@@ -137,7 +137,7 @@ final class FrameStacker {
 
   func finalize() -> Result<[String], Error> {
     guard sumFrameCount > 0 || maxFrameCount > 0 else {
-      return .failure(CameraEngineError.captureFailed("no frames stacked"))
+      return .failure(CameraEngineError.captureFailed("P31: no frames were stacked (captures all failed)"))
     }
 
     var uris: [String] = []
@@ -163,7 +163,7 @@ final class FrameStacker {
     }
 
     return uris.isEmpty
-      ? .failure(CameraEngineError.captureFailed("stack rendering failed"))
+      ? .failure(CameraEngineError.captureFailed("P32: stack rendering failed"))
       : .success(uris)
   }
 

@@ -163,6 +163,12 @@ const HELP_TEXTS: Record<string, string> = {
     "Ne garde pour la fusion max que les images où quelque chose est passé dans le ciel. Les traînées ressortent sur un fond plus propre.",
 };
 
+function formatError(e: unknown): string {
+  const err = e as { code?: string; message?: string };
+  if (err?.message) return err.code ? `${err.code} ${err.message}` : err.message;
+  return String(e);
+}
+
 function nearestIndex(values: number[], target: number): number {
   let best = 0;
   for (let i = 1; i < values.length; i++) {
@@ -285,6 +291,15 @@ export default function CameraScreen() {
     setEvIdx(nearestIndex(evStops, 0));
   }, [evStops]);
 
+  // Les plages rétrécissent en passant sur la frontale : reclamper les
+  // indices, sinon isoStops[isoIdx] devient undefined et part au natif.
+  useEffect(() => {
+    setIsoIdx((i) => Math.min(i, isoStops.length - 1));
+  }, [isoStops]);
+  useEffect(() => {
+    setShutterIdx((i) => Math.min(i, shutterStops.length - 1));
+  }, [shutterStops]);
+
   // Aides de visée natives + loupe automatique pendant le réglage du focus.
   useEffect(() => {
     PerseiCamera.setAssistOptions(peaking, zebras, histogramOn).catch(() => {});
@@ -317,7 +332,7 @@ export default function CameraScreen() {
         const capabilities = await PerseiCamera.start(position);
         setCaps(capabilities);
       } catch (e) {
-        setToast(`Erreur caméra : ${String(e)}`);
+        setToast(`Erreur caméra : ${formatError(e)}`);
       }
     })();
   }, [permission, position]);
@@ -511,7 +526,7 @@ export default function CameraScreen() {
       if (uris[0]) setThumbUri(uris[0]);
       setToast('Pose enregistrée ✓');
     } catch (e) {
-      setToast(`Échec pose : ${String(e)}`);
+      setToast(`Échec pose : ${formatError(e)}`);
     } finally {
       setPosing(false);
       setPoseProgress(null);
@@ -564,7 +579,7 @@ export default function CameraScreen() {
       const heic = uris.find((u) => u.endsWith('.heic')) ?? uris[0];
       if (heic) setThumbUri(heic);
     } catch (e) {
-      setToast(`Échec capture : ${String(e)}`);
+      setToast(`Échec capture : ${formatError(e)}`);
     } finally {
       setCapturing(false);
     }

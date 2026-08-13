@@ -1,16 +1,18 @@
 import AVFoundation
 import Foundation
 
+/// Erreurs du moteur, chacune avec un code unique (Pxx) affiché à
+/// l'utilisateur : le code suffit à retrouver le point de défaillance exact.
 enum CameraEngineError: Error, LocalizedError {
-  case deviceUnavailable
-  case notRunning
-  case captureFailed(String)
+  case deviceUnavailable        // P10 : aucun device résolu ou input refusé
+  case notRunning               // P11 : session arrêtée au moment de l'appel
+  case captureFailed(String)    // P2x/P3x : voir le code embarqué dans le message
 
   var errorDescription: String? {
     switch self {
-    case .deviceUnavailable: return "Camera device unavailable"
-    case .notRunning: return "Camera session is not running"
-    case .captureFailed(let reason): return "Capture failed: \(reason)"
+    case .deviceUnavailable: return "P10: camera device unavailable"
+    case .notRunning: return "P11: camera session is not running"
+    case .captureFailed(let reason): return reason
     }
   }
 }
@@ -112,13 +114,20 @@ final class CameraEngine: NSObject {
     session.beginConfiguration()
     session.sessionPreset = .photo
 
-    if let currentInput = videoInput {
-      session.removeInput(currentInput)
+    let previousInput = videoInput
+    if let previousInput {
+      session.removeInput(previousInput)
       videoInput = nil
     }
 
     let input = try AVCaptureDeviceInput(device: newDevice)
     guard session.canAddInput(input) else {
+      // Nouveau device refusé : on remet l'ancien input plutôt que de
+      // laisser une session sans entrée (crash à la capture suivante).
+      if let previousInput, session.canAddInput(previousInput) {
+        session.addInput(previousInput)
+        videoInput = previousInput
+      }
       session.commitConfiguration()
       throw CameraEngineError.deviceUnavailable
     }
@@ -341,6 +350,7 @@ final class CameraEngine: NSObject {
   }
 
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
+    guard iso.isFinite, shutterSeconds.isFinite else { return }
     try withLockedDevice { device in
       guard device.isExposureModeSupported(.custom) else { return }
       let bounds = self.exposureBounds(of: device)
@@ -389,6 +399,9 @@ final class CameraEngine: NSObject {
         tint: Float(tint)
       )
       var gains = device.deviceWhiteBalanceGains(for: temperatureAndTint)
+      guard gains.redGain.isFinite, gains.greenGain.isFinite, gains.blueGain.isFinite else {
+        return
+      }
       let maxGain = device.maxWhiteBalanceGain
       gains.redGain = min(max(gains.redGain, 1.0), maxGain)
       gains.greenGain = min(max(gains.greenGain, 1.0), maxGain)
@@ -417,19 +430,30 @@ final class CameraEngine: NSObject {
 
   /// Point d'intérêt (coordonnées device, 0-1) : focus one-shot toujours,
   /// exposition seulement si l'utilisateur n'est pas en exposition manuelle.
+  /// Asynchrone : appelé depuis le main thread au tap, et la sessionQueue
+  /// peut être occupée plusieurs secondes pendant une pose (watchdog sinon).
   func setPointOfInterest(_ point: CGPoint) {
-    try? withLockedDevice { device in
-      if device.isFocusPointOfInterestSupported {
-        device.focusPointOfInterest = point
-        if device.isFocusModeSupported(.autoFocus) {
-          device.focusMode = .autoFocus
-        }
+    sessionQueue.async {
+      guard let device = self.device else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        self.applyPointOfInterest(point, to: device)
+      } catch {}
+    }
+  }
+
+  private func applyPointOfInterest(_ point: CGPoint, to device: AVCaptureDevice) {
+    if device.isFocusPointOfInterestSupported {
+      device.focusPointOfInterest = point
+      if device.isFocusModeSupported(.autoFocus) {
+        device.focusMode = .autoFocus
       }
-      if device.isExposurePointOfInterestSupported, device.exposureMode != .custom {
-        device.exposurePointOfInterest = point
-        if device.isExposureModeSupported(.continuousAutoExposure) {
-          device.exposureMode = .continuousAutoExposure
-        }
+    }
+    if device.isExposurePointOfInterestSupported, device.exposureMode != .custom {
+      device.exposurePointOfInterest = point
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
       }
     }
   }
@@ -522,6 +546,7 @@ final class CameraEngine: NSObject {
   var onLongExposureProgress: (([String: Any]) -> Void)?
   private var stackCancelled = false
   private var stackFramesDone = 0
+  private var stackRunning = false
 
   func cancelLongExposure() {
     sessionQueue.async { self.stackCancelled = true }
@@ -543,6 +568,12 @@ final class CameraEngine: NSObject {
         completion(.failure(CameraEngineError.notRunning))
         return
       }
+      // Double déclenchement (bouton volume + écran) : une seule pose à la fois.
+      guard !self.stackRunning else {
+        completion(.failure(CameraEngineError.captureFailed("P30: a long exposure is already running")))
+        return
+      }
+      self.stackRunning = true
       self.stackCancelled = false
       self.stackFramesDone = 0
 
@@ -576,7 +607,10 @@ final class CameraEngine: NSObject {
     stacker: FrameStacker,
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    if remaining == 0 || stackCancelled {
+    // Session interrompue (appel entrant, arrière-plan) ou arrêtée : on
+    // termine proprement avec ce qui est déjà empilé au lieu de déclencher
+    // une capture sur une connexion inactive (NSException).
+    if remaining == 0 || stackCancelled || !session.isRunning || session.isInterrupted {
       finishStack(stacker: stacker, completion: completion)
       return
     }
@@ -617,6 +651,7 @@ final class CameraEngine: NSObject {
     // Rendu final hors de la sessionQueue (peut prendre du temps), puis
     // retour en exposition auto.
     sessionQueue.async {
+      self.stackRunning = false
       guard let device = self.device else { return }
       do {
         try device.lockForConfiguration()
@@ -647,8 +682,15 @@ final class CameraEngine: NSObject {
         return
       }
 
+      // Le bracketing est interdit par AVFoundation en combinaison avec le
+      // RAW différé, Live Photo et la profondeur : photo simple dans ces cas.
+      let bracketAllowed = !raw
+        && bracketStops.count >= 2
+        && self.photoOutput.maxBracketedCapturePhotoCount >= bracketStops.count
+        && !self.photoOutput.isLivePhotoCaptureEnabled
+        && !self.photoOutput.isDepthDataDeliveryEnabled
       let settings: AVCapturePhotoSettings
-      if !raw, bracketStops.count >= 2, self.photoOutput.maxBracketedCapturePhotoCount >= bracketStops.count {
+      if bracketAllowed {
         settings = self.makeBracketSettings(stops: bracketStops)
       } else {
         settings = self.makePhotoSettings(raw: raw)
@@ -758,7 +800,7 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     }
     guard let data = photo.fileDataRepresentation() else {
       if firstError == nil {
-        firstError = CameraEngineError.captureFailed("empty photo data")
+        firstError = CameraEngineError.captureFailed("P20: empty photo data")
       }
       return
     }
