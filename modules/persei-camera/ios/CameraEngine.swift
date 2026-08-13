@@ -31,6 +31,11 @@ final class CameraEngine: NSObject {
   // Keeps capture delegates alive until their capture completes.
   private var inFlightCaptures: [Int64: PhotoCaptureDelegate] = [:]
 
+  /// Live sensor readout pushed to JS (set by the module while observed).
+  var onExposureUpdate: (([String: Any]) -> Void)?
+  private var observations: [NSKeyValueObservation] = []
+  private var lastEmit = Date.distantPast
+
   private static let lensDeviceTypes: [String: AVCaptureDevice.DeviceType] = [
     "ultraWide": .builtInUltraWideCamera,
     "wide": .builtInWideAngleCamera,
@@ -103,7 +108,47 @@ final class CameraEngine: NSObject {
     }
 
     session.commitConfiguration()
+    startObserving(newDevice)
     return capabilities(of: newDevice)
+  }
+
+  // MARK: - Live readout
+
+  private func startObserving(_ device: AVCaptureDevice) {
+    observations.forEach { $0.invalidate() }
+    observations = [
+      device.observe(\.iso, options: [.initial, .new]) { [weak self] _, _ in self?.emitUpdate() },
+      device.observe(\.exposureDuration, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+      device.observe(\.lensPosition, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+      device.observe(\.deviceWhiteBalanceGains, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+      device.observe(\.exposureTargetBias, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+      device.observe(\.videoZoomFactor, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+    ]
+  }
+
+  private func emitUpdate() {
+    guard let device, let onExposureUpdate else { return }
+    let now = Date()
+    // ~10 Hz max vers JS.
+    guard now.timeIntervalSince(lastEmit) > 0.1 else { return }
+    lastEmit = now
+
+    var kelvin = 0.0
+    let gains = device.deviceWhiteBalanceGains
+    let maxGain = device.maxWhiteBalanceGain
+    if gains.redGain >= 1, gains.greenGain >= 1, gains.blueGain >= 1,
+       gains.redGain <= maxGain, gains.greenGain <= maxGain, gains.blueGain <= maxGain {
+      kelvin = Double(device.temperatureAndTintValues(for: gains).temperature)
+    }
+
+    onExposureUpdate([
+      "iso": Double(device.iso),
+      "shutter": device.exposureDuration.seconds,
+      "lensPosition": Double(device.lensPosition),
+      "exposureBias": Double(device.exposureTargetBias),
+      "whiteBalanceKelvin": kelvin,
+      "zoom": Double(device.videoZoomFactor),
+    ])
   }
 
   private func capabilities(of device: AVCaptureDevice) -> [String: Any] {
@@ -130,6 +175,8 @@ final class CameraEngine: NSObject {
       "supportsProRaw": photoOutput.isAppleProRAWSupported,
       "maxMegapixels": maxMegapixels,
       "lenses": lenses,
+      "minZoom": Double(device.minAvailableVideoZoomFactor),
+      "maxZoom": Double(device.maxAvailableVideoZoomFactor),
     ]
   }
 
@@ -216,6 +263,35 @@ final class CameraEngine: NSObject {
     try withLockedDevice { device in
       if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
         device.whiteBalanceMode = .continuousAutoWhiteBalance
+      }
+    }
+  }
+
+  func setZoom(_ factor: Double) throws {
+    try withLockedDevice { device in
+      let clamped = min(
+        max(CGFloat(factor), device.minAvailableVideoZoomFactor),
+        device.maxAvailableVideoZoomFactor
+      )
+      device.videoZoomFactor = clamped
+    }
+  }
+
+  /// Point d'intérêt (coordonnées device, 0-1) : focus one-shot toujours,
+  /// exposition seulement si l'utilisateur n'est pas en exposition manuelle.
+  func setPointOfInterest(_ point: CGPoint) {
+    try? withLockedDevice { device in
+      if device.isFocusPointOfInterestSupported {
+        device.focusPointOfInterest = point
+        if device.isFocusModeSupported(.autoFocus) {
+          device.focusMode = .autoFocus
+        }
+      }
+      if device.isExposurePointOfInterestSupported, device.exposureMode != .custom {
+        device.exposurePointOfInterest = point
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+          device.exposureMode = .continuousAutoExposure
+        }
       }
     }
   }

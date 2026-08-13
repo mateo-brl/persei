@@ -13,4 +13,20 @@ export interface CameraCapabilities {
   supportsProRaw: boolean;
   maxMegapixels: number;
   lenses: LensId[];
+  minZoom: number;
+  maxZoom: number;
 }
+
+/** Lecture temps réel du capteur (~10 Hz), y compris en modes auto. */
+export interface ExposureUpdate {
+  iso: number;
+  shutter: number;
+  lensPosition: number;
+  exposureBias: number;
+  whiteBalanceKelvin: number;
+  zoom: number;
+}
+
+export type PerseiCameraEvents = {
+  onExposureUpdate(update: ExposureUpdate): void;
+};
