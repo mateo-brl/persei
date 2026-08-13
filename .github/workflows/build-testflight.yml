@@ -1,0 +1,35 @@
+name: Build → TestFlight
+on:
+  workflow_dispatch:
+    inputs:
+      submit: { description: 'Envoyer sur TestFlight', type: boolean, default: true }
+  push:
+    tags: ['v*']
+
+concurrency: { group: ios-build, cancel-in-progress: false }
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm install -g eas-cli@latest
+      - name: Compiler l'IPA sur le runner
+        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        run: |
+          eas build --platform ios --profile production \
+            --local --non-interactive \
+            --output "${{ runner.temp }}/app.ipa"
+      - name: Envoyer sur TestFlight
+        if: inputs.submit != false
+        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        run: |
+          eas submit --platform ios --profile production \
+            --path "${{ runner.temp }}/app.ipa" --non-interactive
+      # Pas d'artifact IPA : sur un repo public il serait téléchargeable par tous.
+      - if: always()
+        run: rm -f "${{ runner.temp }}/app.ipa"

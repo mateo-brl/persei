@@ -1,0 +1,31 @@
+name: Mise à jour OTA
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.github/**']
+  workflow_dispatch:
+    inputs:
+      message: { description: 'Message', type: string, default: 'Mise à jour manuelle' }
+
+concurrency: { group: ota-update, cancel-in-progress: true }
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm install -g eas-cli@latest
+      - name: Publier
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Par variable d'environnement, jamais interpolé dans la commande :
+          # un message contenant des métacaractères shell serait exécuté.
+          COMMIT_MESSAGE: ${{ inputs.message || github.event.head_commit.message }}
+        run: |
+          MESSAGE=$(printf '%s' "$COMMIT_MESSAGE" | head -n 1)
+          eas update --branch production --platform ios --message "$MESSAGE"
