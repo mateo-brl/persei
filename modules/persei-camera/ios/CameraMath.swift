@@ -162,6 +162,46 @@ enum CameraMath {
     }
     return available.indices.min { abs(available[$0] - target) < abs(available[$1] - target) }
   }
+
+  /// Une définition demandée à la capture doit satisfaire deux conditions à la
+  /// fois : appartenir aux définitions du format ACTIF, et ne pas dépasser le
+  /// plafond posé sur la sortie photo. Une seule des deux ne suffit pas, et
+  /// AVFoundation sanctionne le manquement par une exception au déclenchement,
+  /// jamais par une erreur. D'où cette vérification systématique.
+  static func isPhotoSizeAllowed(_ size: PhotoSize, available: [PhotoSize], cap: PhotoSize?) -> Bool {
+    guard available.contains(size) else { return false }
+    guard let cap else { return true }
+    return size.width <= cap.width && size.height <= cap.height
+  }
+
+  /// Définition à demander : celle qui est déjà posée sur la sortie si elle
+  /// reste acceptable, sinon la plus grande qui l'est. Rend `nil` quand aucune
+  /// ne convient : l'appelant ne pose alors rien du tout, ce qu'AVFoundation
+  /// accepte toujours.
+  static func usablePhotoSize(available: [PhotoSize], cap: PhotoSize?) -> PhotoSize? {
+    if let cap, isPhotoSizeAllowed(cap, available: available, cap: cap) { return cap }
+    return available
+      .filter { isPhotoSizeAllowed($0, available: available, cap: cap) }
+      .max { $0.pixels < $1.pixels }
+  }
+
+  /// Plus petite définition acceptable : la pose longue empile des dizaines
+  /// d'images en mémoire, elle ne peut pas le faire en 48 MP.
+  static func smallestPhotoSize(available: [PhotoSize], cap: PhotoSize?) -> PhotoSize? {
+    available
+      .filter { isPhotoSizeAllowed($0, available: available, cap: cap) }
+      .min { $0.pixels < $1.pixels }
+  }
+}
+
+/// Une définition photo en pixels. Doublure testable de `CMVideoDimensions`,
+/// que CameraMath n'importe pas pour rester compilable sans matériel.
+struct PhotoSize: Equatable {
+  let width: Int
+  let height: Int
+
+  var pixels: Int { width * height }
+  var megapixels: Double { Double(width) * Double(height) / 1_000_000.0 }
 }
 
 // MARK: - Vidéo

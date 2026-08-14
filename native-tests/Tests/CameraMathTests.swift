@@ -149,6 +149,71 @@ final class CameraMathTests: XCTestCase {
     XCTAssertNil(CameraMath.nearestPhotoSize([], target: 12))
   }
 
+  // MARK: - Définitions photo acceptables
+
+  /// Définitions du 16 Pro en format photo, et celles d'un format vidéo 4K.
+  private let photoSizes = [
+    PhotoSize(width: 4032, height: 3024),
+    PhotoSize(width: 8064, height: 6048),
+  ]
+  private let quatreK = PhotoSize(width: 3840, height: 2160)
+
+  /// Le plantage du build 31, en une ligne : le plafond de la sortie datait du
+  /// format vidéo, il n'appartient pas au format photo redevenu actif, et le
+  /// déclenchement levait une exception. Refuser cette taille est donc la
+  /// bonne réponse, et il doit rester une taille utilisable à proposer.
+  func testStaleVideoSizeIsRefusedAfterReturningToPhoto() {
+    XCTAssertFalse(
+      CameraMath.isPhotoSizeAllowed(quatreK, available: photoSizes, cap: quatreK),
+      "une définition absente du format actif ne doit jamais être demandée"
+    )
+    XCTAssertEqual(
+      CameraMath.usablePhotoSize(available: photoSizes, cap: quatreK),
+      PhotoSize(width: 8064, height: 6048),
+      "plafond périmé : on retombe sur la plus grande définition réellement offerte"
+    )
+  }
+
+  /// Les deux conditions comptent : appartenir au format actif ne suffit pas
+  /// si la sortie plafonne plus bas.
+  func testCapAndActiveFormatBothApply() {
+    let plafond = PhotoSize(width: 4032, height: 3024)
+    XCTAssertTrue(CameraMath.isPhotoSizeAllowed(plafond, available: photoSizes, cap: plafond))
+    XCTAssertFalse(
+      CameraMath.isPhotoSizeAllowed(PhotoSize(width: 8064, height: 6048), available: photoSizes, cap: plafond),
+      "48 MP dépasse le plafond de 12 MP posé sur la sortie"
+    )
+    XCTAssertEqual(
+      CameraMath.usablePhotoSize(available: photoSizes, cap: plafond),
+      plafond,
+      "un plafond valide est repris tel quel"
+    )
+  }
+
+  /// La pose longue empile en mémoire : elle prend la plus petite, jamais la
+  /// première venue (l'ordre de la liste matérielle n'est pas garanti).
+  func testPoseTakesTheSmallestNotTheFirst() {
+    let desordre = [
+      PhotoSize(width: 8064, height: 6048),
+      PhotoSize(width: 4032, height: 3024),
+    ]
+    XCTAssertEqual(
+      CameraMath.smallestPhotoSize(available: desordre, cap: nil),
+      PhotoSize(width: 4032, height: 3024)
+    )
+  }
+
+  /// Aucune définition acceptable : ne rien demander, ce qu'AVFoundation
+  /// accepte toujours. Poser une valeur inventée serait le plantage.
+  func testNoUsableSizeMeansAskForNothing() {
+    XCTAssertNil(CameraMath.usablePhotoSize(available: [], cap: quatreK))
+    XCTAssertNil(CameraMath.smallestPhotoSize(available: [], cap: nil))
+    XCTAssertNil(
+      CameraMath.usablePhotoSize(available: photoSizes, cap: PhotoSize(width: 640, height: 480)),
+      "plafond plus bas que tout ce que le format offre"
+    )
+  }
+
   /// Une trame de pose dure au plus 1 s, et moins si la caméra ne suit pas :
   /// dépasser lève une exception, d'où les poses qui « duraient 5 s ».
   func testPoseFrameNeverExceedsHardwareLimit() {
