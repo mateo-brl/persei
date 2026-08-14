@@ -148,7 +148,6 @@ extension CameraEngine {
     let zoomAvant = device?.videoZoomFactor
     session.sessionPreset = video.savedPhotoPreset ?? .photo
     if let device {
-      applyResolutionPreference(for: device)
       if let zoomAvant {
         do {
           try device.lockForConfiguration()
@@ -163,9 +162,18 @@ extension CameraEngine {
     reapplyPhotoOutputOptions()
     session.commitConfiguration()
 
-    // Après le commit, le format photo est actif : c'est le seul moment où
-    // demander sRGB a un sens, et seulement s'il l'accepte.
-    if let device { appliquerEspace(.sRGB, sur: device) }
+    // Après le commit seulement. Le preset ne rebascule le format du device
+    // qu'à cet instant : tout ce qui dépend du format actif et qu'on lirait
+    // plus tôt appartiendrait encore à la vidéo.
+    if let device {
+      // C'est le seul moment où demander sRGB a un sens, et seulement s'il
+      // l'accepte.
+      appliquerEspace(.sRGB, sur: device)
+      // Les définitions photo aussi : calculées trop tôt, elles gardaient
+      // celles du format vidéo, absentes du format photo, et la première
+      // photo prise après un retour de vidéo levait une exception.
+      applyResolutionPreference(for: device)
+    }
 
     video.isActive = false
     refreshAssistOutputLocked()
@@ -322,15 +330,16 @@ extension CameraEngine {
       session.commitConfiguration()
       return false
     }
-    // Le format vidéo change les tailles de photo disponibles : sans cette
-    // remise à jour, prendre une photo pendant la vidéo lève une exception.
-    applyResolutionPreference(for: device)
     // Activer le cinématique reconfigure tout le pipeline : Apple demande que
     // ça se fasse dans le même bloc de configuration, sinon la préview gèle.
     applyCinematicLocked()
     applyAudioOptionsLocked()
     session.commitConfiguration()
 
+    // Le format vidéo change les définitions photo disponibles : sans cette
+    // remise à jour, prendre une photo pendant la vidéo lève une exception.
+    // Après le commit, comme partout ailleurs : une seule règle à retenir.
+    applyResolutionPreference(for: device)
     applyStabilizationLocked()
     applyCodecLocked()
     applyRotationLocked()

@@ -247,7 +247,6 @@ final class CameraEngine: NSObject {
     }
 
     photoOutput.maxPhotoQualityPrioritization = .quality
-    applyResolutionPreference(for: newDevice)
     if photoOutput.isAppleProRAWSupported {
       photoOutput.isAppleProRAWEnabled = true
     }
@@ -303,6 +302,11 @@ final class CameraEngine: NSObject {
     session.commitConfiguration()
     startObserving(newDevice)
 
+    // Après le commit : avant, le preset .photo n'a pas encore rebasculé le
+    // format du device, qui peut être resté sur celui d'une session vidéo
+    // précédente. Les définitions posées appartiendraient alors à la vidéo.
+    applyResolutionPreference(for: newDevice)
+
     // Le preset remis à .photo efface le format vidéo : si on était en vidéo
     // (changement d'objectif en cours de session), on le réapplique.
     if video.isActive {
@@ -337,6 +341,43 @@ final class CameraEngine: NSObject {
     let sizes = dimensions.map(Self.megapixels(of:))
     guard let index = CameraMath.nearestPhotoSize(sizes, target: photoMegapixels) else { return }
     photoOutput.maxPhotoDimensions = dimensions[index]
+  }
+
+  /// Définitions offertes par le format ACTIF, traduites pour CameraMath.
+  private var definitionsDuFormatActif: [PhotoSize] {
+    (device?.activeFormat.supportedMaxPhotoDimensions ?? [])
+      .map { PhotoSize(width: Int($0.width), height: Int($0.height)) }
+  }
+
+  /// Plafond posé sur la sortie photo. Une demande de capture ne peut jamais
+  /// le dépasser.
+  private var plafondDeLaSortie: PhotoSize {
+    let dimensions = photoOutput.maxPhotoDimensions
+    return PhotoSize(width: Int(dimensions.width), height: Int(dimensions.height))
+  }
+
+  /// Pose les dimensions sur une demande de capture, et seulement si le format
+  /// actif ET le plafond de la sortie les acceptent tous les deux.
+  ///
+  /// C'est la garde qui rend le plantage du 14 août impossible à reproduire :
+  /// le plafond de la sortie avait été calculé sur le format vidéo, il ne
+  /// figurait plus dans les définitions du format photo redevenu actif, et
+  /// `capturePhoto` levait une exception. Recopier ce plafond sans le vérifier
+  /// revenait à faire confiance à un état qu'une reconfiguration a pu périmer.
+  private func poserDimensions(_ taille: PhotoSize?, sur settings: AVCapturePhotoSettings) {
+    guard let taille else { return }
+    settings.maxPhotoDimensions = CMVideoDimensions(
+      width: Int32(taille.width),
+      height: Int32(taille.height)
+    )
+  }
+
+  /// La sortie photo peut-elle déclencher maintenant ? En mode vidéo Log, ou
+  /// pendant une reconfiguration, sa connexion existe mais reste inactive :
+  /// déclencher dessus lève une exception au lieu de rendre une erreur.
+  private var sortiePhotoPrete: Bool {
+    guard let connexion = photoOutput.connection(with: .video) else { return false }
+    return connexion.isActive && connexion.isEnabled
   }
 
   private static func megapixels(of dimensions: CMVideoDimensions) -> Double {
@@ -1094,7 +1135,8 @@ final class CameraEngine: NSObject {
     // arrière-plan) ou arrêtée : on termine proprement avec ce qui est déjà
     // empilé au lieu de déclencher sur une connexion inactive (NSException).
     let elapsed = Date().timeIntervalSince(poseStartDate)
-    if elapsed >= totalSeconds || stackCancelled || !session.isRunning || session.isInterrupted {
+    if elapsed >= totalSeconds || stackCancelled || !session.isRunning || session.isInterrupted
+      || !sortiePhotoPrete {
       // Marqueur « assemblage » : frame == total, le JS affiche la bonne phase.
       onLongExposureProgress?(["frame": Int(totalSeconds), "total": Int(totalSeconds)])
       finishStack(stacker: stacker, completion: completion)
@@ -1108,9 +1150,10 @@ final class CameraEngine: NSObject {
       // en 12 MP (dimensions minimales) pour contenir la mémoire d'empilement.
       let bayerType = rawTypes.first { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) } ?? rawTypes[0]
       settings = AVCapturePhotoSettings(rawPixelFormatType: bayerType)
-      if let smallest = device?.activeFormat.supportedMaxPhotoDimensions.first {
-        settings.maxPhotoDimensions = smallest
-      }
+      poserDimensions(
+        CameraMath.smallestPhotoSize(available: definitionsDuFormatActif, cap: plafondDeLaSortie),
+        sur: settings
+      )
     } else if let format = hevcFormat() {
       settings = AVCapturePhotoSettings(format: format)
     } else {
@@ -1179,7 +1222,7 @@ final class CameraEngine: NSObject {
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
     sessionQueue.async {
-      guard self.session.isRunning else {
+      guard self.session.isRunning, self.sortiePhotoPrete else {
         completion(.failure(CameraEngineError.notRunning))
         return
       }
@@ -1261,7 +1304,10 @@ final class CameraEngine: NSObject {
       settings = AVCapturePhotoSettings()
     }
 
-    settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+    poserDimensions(
+      CameraMath.usablePhotoSize(available: definitionsDuFormatActif, cap: plafondDeLaSortie),
+      sur: settings
+    )
     settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
 
     if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
