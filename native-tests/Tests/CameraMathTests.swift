@@ -158,10 +158,10 @@ final class CameraMathTests: XCTestCase {
   ]
   private let quatreK = PhotoSize(width: 3840, height: 2160)
 
-  /// Le plantage du build 31, en une ligne : le plafond de la sortie datait du
-  /// format vidéo, il n'appartient pas au format photo redevenu actif, et le
-  /// déclenchement levait une exception. Refuser cette taille est donc la
-  /// bonne réponse, et il doit rester une taille utilisable à proposer.
+  /// Piège trouvé en cherchant le plantage du build 31 sans en être la cause :
+  /// le plafond de la sortie pouvait dater du format vidéo, donc ne pas
+  /// appartenir au format photo redevenu actif, et le déclenchement aurait levé
+  /// une exception. Refuser cette taille est la bonne réponse.
   func testStaleVideoSizeIsRefusedAfterReturningToPhoto() {
     XCTAssertFalse(
       CameraMath.isPhotoSizeAllowed(quatreK, available: photoSizes, cap: quatreK),
@@ -284,7 +284,7 @@ final class CameraMathTests: XCTestCase {
       targetSeconds: CameraMath.poseFrameSeconds(in: bornes),
       in: bornes
     )
-    XCTAssertEqual(iso, 806.4, accuracy: 0.1, "12096 ISO en 1/15 s valent 806 ISO en 1 s")
+    XCTAssertEqual(iso, Float(806.4), accuracy: 0.1, "12096 ISO en 1/15 s valent 806 ISO en 1 s")
   }
 
   /// La contrepartie : en plein jour, allonger à 1 s ne rendrait que du blanc.
