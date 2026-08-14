@@ -225,6 +225,116 @@ final class CameraMathTests: XCTestCase {
     )
   }
 
+  // MARK: - RAW et zoom
+
+  /// Le plantage du 14 août à 22 h 48, mot pour mot : « When specifying Bayer
+  /// raw capture, the videoZoomFactor of the video device must be set to 1.0 ».
+  /// Une pose lancée au 2× demandait quand même du Bayer.
+  func testBayerRawIsNeverRequestedAwayFromZoomOne() {
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: false, zoom: 2, compact: true),
+      .processed,
+      "au 2× sans ProRAW, l'empilement se fait en développé plutôt qu'en plantant"
+    )
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: true, zoom: 2, compact: false),
+      .proRaw,
+      "hors empilement, le ProRAW prend le relais : lui accepte tous les zooms"
+    )
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: true, zoom: 1, compact: true),
+      .bayer,
+      "au zoom neutre, le Bayer reste le bon choix pour empiler"
+    )
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: true, zoom: 2, compact: true),
+      .processed,
+      "empiler du ProRAW ne tient pas en mémoire : développé"
+    )
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: false, hasBayer: true, hasProRaw: true, zoom: 1, compact: false),
+      .processed,
+      "sans demande de RAW, on n'en fait pas"
+    )
+  }
+
+  /// Le zoom vient d'un pincement : il ne vaut jamais exactement 1,0.
+  func testZoomComparisonToleratesPinchImprecision() {
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: false, zoom: 1.0000004, compact: true),
+      .bayer
+    )
+    XCTAssertEqual(
+      CameraMath.rawKind(wantsRaw: true, hasBayer: true, hasProRaw: false, zoom: 1.05, compact: true),
+      .processed,
+      "5 % de zoom suffisent à faire lever AVFoundation"
+    )
+  }
+
+  // MARK: - Exposition d'une pose en automatique
+
+  /// Ce que voyait Mateo : pose de 30 s en automatique, capteur bloqué à
+  /// 1/15 s et ISO 12096, donc image noire et bruitée. En allongeant à 1 s, la
+  /// même lumière se rattrape quinze fois, et l'ISO redescend d'autant.
+  func testAutoPoseTradesIsoForExposureTime() {
+    let bornes = ExposureLimits(minIso: 34, maxIso: 12096, minSeconds: 1 / 8000, maxSeconds: 1)
+    let iso = CameraMath.equivalentIso(
+      currentIso: 12096,
+      currentSeconds: 1.0 / 15.0,
+      targetSeconds: CameraMath.poseFrameSeconds(in: bornes),
+      in: bornes
+    )
+    XCTAssertEqual(iso, 806.4, accuracy: 0.1, "12096 ISO en 1/15 s valent 806 ISO en 1 s")
+  }
+
+  /// La contrepartie : en plein jour, allonger à 1 s ne rendrait que du blanc.
+  /// La durée s'arrête là où l'ISO minimal est atteint.
+  func testDaylightPoseKeepsShortFrames() {
+    let bornes = ExposureLimits(minIso: 34, maxIso: 12096, minSeconds: 1 / 8000, maxSeconds: 1)
+    // Plein jour : ISO 34 au 1/2000 s. Aucune marge, la durée ne bouge pas.
+    XCTAssertEqual(
+      CameraMath.poseFrameSeconds(currentIso: 34, currentSeconds: 1 / 2000, in: bornes),
+      1.0 / 2000,
+      accuracy: 1e-9
+    )
+    // Intérieur : ISO 400 au 1/60 s. On peut allonger d'un facteur 400/34.
+    XCTAssertEqual(
+      CameraMath.poseFrameSeconds(currentIso: 400, currentSeconds: 1 / 60, in: bornes),
+      400.0 / 34 / 60,
+      accuracy: 1e-6
+    )
+    // Nuit noire : la limite ne joue plus, on prend la seconde entière.
+    XCTAssertEqual(
+      CameraMath.poseFrameSeconds(currentIso: 12096, currentSeconds: 1 / 15, in: bornes),
+      1.0,
+      accuracy: 1e-9
+    )
+  }
+
+  /// L'ISO calculé reste dans les bornes du matériel : hors bornes,
+  /// `setExposureModeCustom` lève une exception.
+  func testEquivalentIsoStaysWithinHardwareBounds() {
+    let bornes = ExposureLimits(minIso: 34, maxIso: 3072, minSeconds: 1 / 8000, maxSeconds: 0.5)
+    XCTAssertEqual(
+      CameraMath.equivalentIso(currentIso: 100, currentSeconds: 1 / 4000, targetSeconds: 0.5, in: bornes),
+      34,
+      accuracy: 1e-6,
+      "une scène très claire tomberait sous l'ISO minimal"
+    )
+    XCTAssertEqual(
+      CameraMath.equivalentIso(currentIso: 12096, currentSeconds: 1, targetSeconds: 0.5, in: bornes),
+      3072,
+      accuracy: 1e-6,
+      "et une scène très sombre dépasserait l'ISO maximal"
+    )
+    XCTAssertEqual(
+      CameraMath.equivalentIso(currentIso: .nan, currentSeconds: 0, targetSeconds: 1, in: bornes),
+      3072,
+      accuracy: 1e-6,
+      "lecture capteur indisponible : on prend le maximum plutôt que rien"
+    )
+  }
+
   /// Une trame de pose dure au plus 1 s, et moins si la caméra ne suit pas :
   /// dépasser lève une exception, d'où les poses qui « duraient 5 s ».
   func testPoseFrameNeverExceedsHardwareLimit() {
