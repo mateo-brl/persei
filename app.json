@@ -17,7 +17,8 @@
         "NSCameraUsageDescription": "Persei utilise l'appareil photo pour capturer vos photos avec des réglages manuels.",
         "NSMicrophoneUsageDescription": "Persei enregistre le son avec vos vidéos.",
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "appleTeamId": "M9GRJSY2QN"
     },
     "android": {
       "package": "com.mateobaril.persei",
