@@ -167,10 +167,21 @@ final class CameraMathTests: XCTestCase {
       CameraMath.isPhotoSizeAllowed(quatreK, available: photoSizes, cap: quatreK),
       "une définition absente du format actif ne doit jamais être demandée"
     )
-    XCTAssertEqual(
+    XCTAssertTrue(
+      CameraMath.isPhotoCapStale(quatreK, available: photoSizes),
+      "un plafond hérité de la vidéo doit être reconnu comme périmé"
+    )
+    // Un plafond périmé ne laisse aucune taille demandable : 4032 et 8064 le
+    // dépassent tous les deux. Renoncer ici serait perdre la pleine
+    // définition, d'où le recalcul côté moteur avant de demander quoi que ce
+    // soit — ce test fixe la raison d'être de ce recalcul.
+    XCTAssertNil(
       CameraMath.usablePhotoSize(available: photoSizes, cap: quatreK),
-      PhotoSize(width: 8064, height: 6048),
-      "plafond périmé : on retombe sur la plus grande définition réellement offerte"
+      "tant que le plafond n'est pas recalculé, rien n'est demandable"
+    )
+    XCTAssertFalse(
+      CameraMath.isPhotoCapStale(PhotoSize(width: 4032, height: 3024), available: photoSizes),
+      "un plafond recalculé sur le format photo est valide"
     )
   }
 

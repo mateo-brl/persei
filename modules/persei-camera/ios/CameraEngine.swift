@@ -356,6 +356,21 @@ final class CameraEngine: NSObject {
     return PhotoSize(width: Int(dimensions.width), height: Int(dimensions.height))
   }
 
+  /// Plafond de la sortie, remis d'aplomb s'il vient d'un autre format.
+  ///
+  /// C'est lui la source du plantage du 14 août, pas la demande de capture :
+  /// tant qu'il désigne une définition absente du format actif, plus aucune
+  /// taille n'est demandable. On le recalcule plutôt que de renoncer à la
+  /// pleine définition.
+  private func plafondVerifie() -> PhotoSize {
+    let definitions = definitionsDuFormatActif
+    guard CameraMath.isPhotoCapStale(plafondDeLaSortie, available: definitions),
+          let device
+    else { return plafondDeLaSortie }
+    applyResolutionPreference(for: device)
+    return plafondDeLaSortie
+  }
+
   /// Pose les dimensions sur une demande de capture, et seulement si le format
   /// actif ET le plafond de la sortie les acceptent tous les deux.
   ///
@@ -1151,7 +1166,7 @@ final class CameraEngine: NSObject {
       let bayerType = rawTypes.first { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) } ?? rawTypes[0]
       settings = AVCapturePhotoSettings(rawPixelFormatType: bayerType)
       poserDimensions(
-        CameraMath.smallestPhotoSize(available: definitionsDuFormatActif, cap: plafondDeLaSortie),
+        CameraMath.smallestPhotoSize(available: definitionsDuFormatActif, cap: plafondVerifie()),
         sur: settings
       )
     } else if let format = hevcFormat() {
@@ -1305,7 +1320,7 @@ final class CameraEngine: NSObject {
     }
 
     poserDimensions(
-      CameraMath.usablePhotoSize(available: definitionsDuFormatActif, cap: plafondDeLaSortie),
+      CameraMath.usablePhotoSize(available: definitionsDuFormatActif, cap: plafondVerifie()),
       sur: settings
     )
     settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
