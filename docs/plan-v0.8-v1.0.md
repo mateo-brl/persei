@@ -182,3 +182,26 @@ partir vers un binaire incompatible).
 Aucune API publique ne les expose, ce n'est pas un manque mais une limite :
 réglage du pipeline Smart HDR, mode Nuit d'Apple lui-même, intensité du flash,
 bokeh photo système, ouverture (le diaphragme est fixe).
+
+## En attente d'une action de Mateo
+
+Les boutons de Centre de contrôle sont écrits, compilés et vérifiés au
+démarrage en simulateur, mais ils ne peuvent pas partir sur TestFlight : la
+cible d'extension a son propre identifiant (`com.mateobaril.persei.control`) et
+EAS refuse de créer son profil de signature sans confirmation humaine. Il a
+pourtant réussi à enregistrer l'identifiant chez Apple, il ne manque que le
+profil.
+
+Une seule commande à passer une fois, en interactif :
+
+```
+npx eas-cli login
+npx eas-cli credentials --platform ios
+```
+
+puis choisir le profil `production`, la cible `PerseiControl`, et laisser EAS
+générer le profil de distribution. Ensuite, remettre `@bacons/apple-targets`
+dans les plugins d'`app.json` et taguer une version.
+
+En attendant, le plugin est retiré de la liste : tout le reste (raccourcis
+Siri, vidéo cinématique, son) part normalement.
