@@ -2,7 +2,7 @@
   "expo": {
     "name": "Persei",
     "slug": "persei",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "persei",
@@ -64,7 +64,6 @@
           "savePhotosPermission": "Persei enregistre vos photos dans votre photothèque."
         }
       ],
-      "@bacons/apple-targets",
       "./plugins/with-app-intents"
     ],
     "experiments": {
