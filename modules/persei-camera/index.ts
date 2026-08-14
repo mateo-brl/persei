@@ -8,6 +8,13 @@ export type {
   FlashMode,
   LongExposureProgress,
   QualityPrioritization,
+  RecordingProgress,
+  RecordingStopped,
   StackMode,
+  VideoCapabilities,
+  VideoCodec,
+  VideoRange,
+  VideoSettings,
+  VideoStabilization,
   ZoomPreset,
 } from './src/PerseiCamera.types';

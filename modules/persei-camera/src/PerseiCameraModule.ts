@@ -8,6 +8,8 @@ import type {
   PerseiCameraEvents,
   QualityPrioritization,
   StackMode,
+  VideoCapabilities,
+  VideoSettings,
 } from './PerseiCamera.types';
 
 declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
@@ -32,8 +34,8 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   /** 0 = éteinte, sinon intensité 0-1. */
   setTorchLevel(level: number): Promise<void>;
   setQualityPrioritization(mode: QualityPrioritization): Promise<void>;
-  /** true = résolution maximale (48 MP si dispo), false = 12 MP. */
-  setHighResolution(enabled: boolean): Promise<void>;
+  /** Définition photo en mégapixels ; 0 demande la plus grande disponible. */
+  setPhotoResolution(megapixels: number): Promise<void>;
   setLivePhotoEnabled(enabled: boolean): Promise<void>;
   setDepthEnabled(enabled: boolean): Promise<void>;
   /** Capture ; renvoie les URIs produits (HEIC, DNG si raw, MOV si Live Photo). */
@@ -58,6 +60,23 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
     manualExposure: boolean
   ): Promise<string[]>;
   cancelLongExposure(): Promise<void>;
+
+  /** Autorisation micro, demandée seulement au passage en vidéo. */
+  requestMicrophonePermission(): Promise<boolean>;
+  /**
+   * Bascule la session en vidéo (ou revient en photo) et renvoie ce que le
+   * matériel sait faire. En vidéo, le format est choisi explicitement : les
+   * presets de session et le choix de format s'excluent.
+   */
+  setVideoMode(enabled: boolean): Promise<VideoCapabilities>;
+  configureVideo(settings: VideoSettings): Promise<VideoCapabilities>;
+  /** Démarre l'enregistrement ; échoue si l'espace disque est insuffisant. */
+  startRecording(): Promise<void>;
+  /** Arrête et renvoie l'URI du fichier .mov. */
+  stopRecording(): Promise<string>;
+  /** Pause dans le même fichier (iOS 18+), sans effet ailleurs. */
+  pauseRecording(): Promise<void>;
+  resumeRecording(): Promise<void>;
 }
 
 export default requireNativeModule<PerseiCameraModule>('PerseiCamera');

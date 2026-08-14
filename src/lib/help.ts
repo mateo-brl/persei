@@ -18,7 +18,7 @@ export const HELP_TEXTS: Record<string, string> = {
   torch:
     "Lampe allumée en continu pendant la visée, avec intensité réglable. Pratique en vidéo ou pour faire le point la nuit.",
   resolution:
-    "En 48 MP tu gardes un maximum de détails et tu peux recadrer large, mais les fichiers pèsent environ quatre fois plus. Le 12 MP fusionne les pixels : fichiers légers et meilleur rendu en basse lumière.",
+    "Le 12 MP fusionne les pixels : fichiers légers et meilleur rendu en basse lumière. Le 24 MP est le bon compromis au quotidien. Le 48 MP garde le maximum de détails et permet de recadrer large, avec des fichiers environ quatre fois plus lourds.",
   quality:
     "Niveau de traitement appliqué par l'iPhone. Max fusionne plusieurs images, c'est plus net mais un peu plus lent. Vitesse capture immédiatement avec un traitement minimal, au rendu plus brut.",
   bracket:
@@ -41,6 +41,14 @@ export const HELP_TEXTS: Record<string, string> = {
     "Recale chaque image sur la première pendant la pose. Permet de poser sans trépied si tu restes à peu près stable.",
   meteorFilter:
     "Ne garde pour la fusion max que les images où quelque chose est passé dans le ciel. Les traînées ressortent sur un fond plus propre.",
+  videoRange:
+    "Standard donne une vidéo lisible partout. HDR garde le détail dans les ciels et les néons, avec les couleurs de l'iPhone. Log aplatit l'image pour l'étalonner ensuite au montage : brut à l'œil, mais c'est le format qui garde le plus de matière.",
+  videoCodec:
+    "HEVC est le format normal, léger et lisible partout. ProRes garde bien plus de détails pour le montage, au prix d'environ six gigaoctets par minute en 4K. Réserve-le aux plans que tu vas vraiment retravailler.",
+  stabilization:
+    "Compense les tremblements en recadrant légèrement l'image. Auto laisse l'iPhone choisir. Max stabilise le plus fort et te fait perdre un peu de champ, pratique en marchant. Off garde tout le cadre, à réserver au trépied.",
+  videoAudio:
+    "Enregistre le son avec l'image. En muet, la vidéo est plus légère et tu évites les bruits de vent ou de manipulation quand tu comptes ajouter une musique ensuite.",
   autoNight:
     "Quand la scène est sombre et que tu es en photo simple, le déclencheur lance automatiquement une pose alignée de 10 s au lieu d'un cliché bruité. L'équivalent du mode Nuit d'Apple, en mieux réglable.",
 };

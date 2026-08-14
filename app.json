@@ -15,6 +15,7 @@
       "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Persei utilise l'appareil photo pour capturer vos photos avec des réglages manuels.",
+        "NSMicrophoneUsageDescription": "Persei enregistre le son avec vos vidéos.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },

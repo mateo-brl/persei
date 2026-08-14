@@ -7,13 +7,43 @@ struct CaptureOptions: Record {
   @Field var bracketStops: [Double] = []
 }
 
+struct VideoOptions: Record {
+  /// Hauteur de l'image : 2160 (4K), 1080, 720.
+  @Field var height: Int = 1080
+  @Field var frameRate: Double = 30
+  /// « sdr », « hdr » (HLG 10 bits, Dolby Vision) ou « log » (Apple Log).
+  @Field var range: String = "sdr"
+  /// « hevc », « h264 » ou « prores ».
+  @Field var codec: String = "hevc"
+  /// « off », « standard », « cinematic », « cinematicExtended », « auto ».
+  @Field var stabilization: String = "auto"
+  @Field var audioEnabled: Bool = true
+}
+
 public class PerseiCameraModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PerseiCamera")
 
-    Events("onExposureUpdate", "onLongExposureProgress", "onHistogram", "onShutterButton")
+    Events(
+      "onExposureUpdate",
+      "onLongExposureProgress",
+      "onHistogram",
+      "onShutterButton",
+      "onRecordingProgress",
+      "onRecordingStopped",
+      "onSystemPressure"
+    )
 
     OnStartObserving {
+      CameraEngine.shared.onRecordingProgress = { [weak self] payload in
+        self?.sendEvent("onRecordingProgress", payload)
+      }
+      CameraEngine.shared.onRecordingStopped = { [weak self] payload in
+        self?.sendEvent("onRecordingStopped", payload)
+      }
+      CameraEngine.shared.onSystemPressure = { [weak self] payload in
+        self?.sendEvent("onSystemPressure", payload)
+      }
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
       }
@@ -33,6 +63,9 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onLongExposureProgress = nil
       CameraEngine.shared.onHistogram = nil
       CameraEngine.shared.onCaptureButton = nil
+      CameraEngine.shared.onRecordingProgress = nil
+      CameraEngine.shared.onRecordingStopped = nil
+      CameraEngine.shared.onSystemPressure = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -102,8 +135,8 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.setQualityPrioritization(mode)
     }
 
-    AsyncFunction("setHighResolution") { (enabled: Bool) in
-      CameraEngine.shared.setHighResolution(enabled)
+    AsyncFunction("setPhotoResolution") { (megapixels: Double) in
+      CameraEngine.shared.setPhotoResolution(megapixels)
     }
 
     AsyncFunction("setLivePhotoEnabled") { (enabled: Bool) in
@@ -135,6 +168,77 @@ public class PerseiCameraModule: Module {
 
     AsyncFunction("cancelLongExposure") {
       CameraEngine.shared.cancelLongExposure()
+    }
+
+    // MARK: Vidéo
+
+    AsyncFunction("requestMicrophonePermission") { (promise: Promise) in
+      AVCaptureDevice.requestAccess(for: .audio) { granted in
+        promise.resolve(granted)
+      }
+    }
+
+    AsyncFunction("setVideoMode") { (enabled: Bool, promise: Promise) in
+      CameraEngine.shared.setVideoMode(enabled) { result in
+        switch result {
+        case .success(let capabilities):
+          promise.resolve(capabilities)
+        case .failure(let error):
+          promise.reject("ERR_VIDEO_MODE", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("configureVideo") { (options: VideoOptions, promise: Promise) in
+      CameraEngine.shared.configureVideo(
+        height: options.height,
+        frameRate: options.frameRate,
+        range: options.range,
+        codec: options.codec,
+        stabilization: options.stabilization,
+        audioEnabled: options.audioEnabled
+      ) { result in
+        switch result {
+        case .success(let capabilities):
+          promise.resolve(capabilities)
+        case .failure(let error):
+          promise.reject("ERR_VIDEO_CONFIG", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("startRecording") { (promise: Promise) in
+      CameraEngine.shared.startRecording { result in
+        switch result {
+        case .success:
+          promise.resolve(nil)
+        case .failure(let error):
+          promise.reject("ERR_RECORDING_START", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("stopRecording") { (promise: Promise) in
+      CameraEngine.shared.stopRecording { result in
+        switch result {
+        case .success(let uri):
+          promise.resolve(uri)
+        case .failure(let error):
+          promise.reject("ERR_RECORDING_STOP", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("pauseRecording") {
+      if #available(iOS 18.0, *) {
+        CameraEngine.shared.pauseRecording()
+      }
+    }
+
+    AsyncFunction("resumeRecording") {
+      if #available(iOS 18.0, *) {
+        CameraEngine.shared.resumeRecording()
+      }
     }
 
     AsyncFunction("capturePhoto") { (options: CaptureOptions, promise: Promise) in

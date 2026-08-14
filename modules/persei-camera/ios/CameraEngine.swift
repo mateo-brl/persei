@@ -27,10 +27,30 @@ final class CameraEngine: NSObject {
   let session = AVCaptureSession()
 
   // All session/device mutations happen on this queue.
-  private let sessionQueue = DispatchQueue(label: "app.persei.camera.session")
-  private var device: AVCaptureDevice?
+  let sessionQueue = DispatchQueue(label: "app.persei.camera.session")
+  private(set) var device: AVCaptureDevice?
   private var videoInput: AVCaptureDeviceInput?
   private let photoOutput = AVCapturePhotoOutput()
+
+  // MARK: Vidéo (voir VideoEngine.swift)
+
+  /// Sortie fichier, entrée audio et réglages vidéo courants.
+  let video = VideoState()
+  /// Promesse de `stopRecording` en attente du fichier finalisé.
+  var pendingStopCompletion: ((Result<String, Error>) -> Void)?
+  /// Cause d'un arrêt subi (surchauffe, interruption, disque plein).
+  var stopReason: String?
+  var onRecordingProgress: (([String: Any]) -> Void)?
+  var onRecordingStopped: (([String: Any]) -> Void)?
+  /// Une propriété stockée ne peut pas porter d'annotation de disponibilité :
+  /// le coordinateur de rotation d'iOS 17 est donc gardé sans type.
+  private var rotationCoordinatorStorage: Any?
+
+  @available(iOS 17.0, *)
+  var rotationCoordinator: AVCaptureDevice.RotationCoordinator? {
+    get { rotationCoordinatorStorage as? AVCaptureDevice.RotationCoordinator }
+    set { rotationCoordinatorStorage = newValue }
+  }
   // Keeps capture delegates alive until their capture completes.
   private var inFlightCaptures: [Int64: PhotoCaptureDelegate] = [:]
 
@@ -55,11 +75,21 @@ final class CameraEngine: NSObject {
     processor.onHistogram = { [weak self] bins in
       self?.onHistogram?(bins)
     }
+    // Appel entrant, passage en arrière-plan, caméra prise par une autre app :
+    // un enregistrement en cours est fermé proprement plutôt que perdu.
+    NotificationCenter.default.addObserver(
+      forName: AVCaptureSession.wasInterruptedNotification,
+      object: session,
+      queue: nil
+    ) { [weak self] _ in
+      self?.stopRecordingBecause("interruption")
+    }
   }
 
   // Préférences de capture (appliquées à chaque photo).
   private var flashMode: AVCaptureDevice.FlashMode = .off
-  private var preferHighResolution = true
+  /// Définition photo visée, en mégapixels (0 = la plus grande disponible).
+  private var photoMegapixels: Double = 0
   private var livePhotoEnabled = false
   private var depthEnabled = false
 
@@ -190,6 +220,12 @@ final class CameraEngine: NSObject {
     session.commitConfiguration()
     startObserving(newDevice)
 
+    // Le preset remis à .photo efface le format vidéo : si on était en vidéo
+    // (changement d'objectif en cours de session), on le réapplique.
+    if video.isActive {
+      applyVideoFormatLocked()
+    }
+
     // Démarrage sur le 1× (capteur principal, le meilleur) plutôt que sur le
     // 0,5× de l'ultra grand-angle où le device virtuel démarre par défaut.
     if newDevice.position == .back, !newDevice.constituentDevices.isEmpty {
@@ -209,10 +245,27 @@ final class CameraEngine: NSObject {
     return capabilities(of: newDevice)
   }
 
-  private func applyResolutionPreference(for device: AVCaptureDevice) {
+  /// Les dimensions photo doivent appartenir à celles du format actif : après
+  /// un changement de format (vidéo), en garder d'anciennes fait lever une
+  /// exception au premier déclenchement.
+  func applyResolutionPreference(for device: AVCaptureDevice) {
     let dimensions = device.activeFormat.supportedMaxPhotoDimensions
     guard !dimensions.isEmpty else { return }
-    photoOutput.maxPhotoDimensions = preferHighResolution ? dimensions.last! : dimensions.first!
+    let sizes = dimensions.map(Self.megapixels(of:))
+    guard let index = CameraMath.nearestPhotoSize(sizes, target: photoMegapixels) else { return }
+    photoOutput.maxPhotoDimensions = dimensions[index]
+  }
+
+  private static func megapixels(of dimensions: CMVideoDimensions) -> Double {
+    Double(dimensions.width) * Double(dimensions.height) / 1_000_000.0
+  }
+
+  /// Définitions photo réellement offertes par le format actif (12, 24, 48 MP
+  /// selon l'appareil), arrondies au dixième.
+  private func photoResolutions(of device: AVCaptureDevice) -> [Double] {
+    device.activeFormat.supportedMaxPhotoDimensions
+      .map { (Self.megapixels(of: $0) * 10).rounded() / 10 }
+      .sorted()
   }
 
   /// Traduction d'une caméra physique en description testable (CameraMath).
@@ -263,6 +316,7 @@ final class CameraEngine: NSObject {
       "supportsRaw": !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
       "supportsProRaw": photoOutput.isAppleProRAWSupported,
       "maxMegapixels": maxMegapixels,
+      "photoResolutions": photoResolutions(of: device),
       "zoomPresets": zoomPresets(of: device),
       "hasFrontCamera": hasFrontCamera,
       "minZoom": Double(device.minAvailableVideoZoomFactor),
@@ -286,8 +340,31 @@ final class CameraEngine: NSObject {
       device.observe(\.deviceWhiteBalanceGains, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
       device.observe(\.exposureTargetBias, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
       device.observe(\.videoZoomFactor, options: [.new]) { [weak self] _, _ in self?.emitUpdate() },
+      // Surchauffe : le système finit par couper la caméra sans prévenir. On
+      // ferme le fichier avant, sinon l'enregistrement est perdu.
+      device.observe(\.systemPressureState, options: [.new]) { [weak self] device, _ in
+        self?.handleSystemPressure(device.systemPressureState)
+      },
     ]
+    if #available(iOS 17.0, *) {
+      rotationCoordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+    }
   }
+
+  private func handleSystemPressure(_ state: AVCaptureDevice.SystemPressureState) {
+    switch state.level {
+    case .critical, .shutdown:
+      stopRecordingBecause("thermal")
+      onSystemPressure?(["level": "critical"])
+    case .serious:
+      onSystemPressure?(["level": "serious"])
+    default:
+      break
+    }
+  }
+
+  /// Avertissement thermique vers le JS.
+  var onSystemPressure: (([String: Any]) -> Void)?
 
   private func emitUpdate() {
     guard let device, let onExposureUpdate else { return }
@@ -354,6 +431,9 @@ final class CameraEngine: NSObject {
   /// À appeler sur la sessionQueue. Remplace l'input par la caméra physique
   /// équivalente si l'input courant est le device virtuel.
   private func ensurePhysicalForManualLocked() {
+    // Changer d'entrée coupe l'enregistrement en cours : en vidéo, la bascule
+    // se fait avant de lancer, jamais pendant.
+    guard !video.isRecording else { return }
     guard let current = device, !current.constituentDevices.isEmpty else { return }
     let currentZoom = current.videoZoomFactor
     savedVirtualZoom = currentZoom
@@ -363,6 +443,7 @@ final class CameraEngine: NSObject {
 
   /// À appeler sur la sessionQueue. Restaure le device virtuel et son zoom.
   private func restoreVirtualLocked() {
+    guard !video.isRecording else { return }
     guard let current = device, current.constituentDevices.isEmpty,
           current.position == .back,
           let virtualDevice = resolveDevice(lens: "back"),
@@ -663,9 +744,10 @@ final class CameraEngine: NSObject {
     }
   }
 
-  func setHighResolution(_ enabled: Bool) {
+  /// Définition photo en mégapixels ; 0 demande la plus grande disponible.
+  func setPhotoResolution(_ megapixels: Double) {
     sessionQueue.async {
-      self.preferHighResolution = enabled
+      self.photoMegapixels = megapixels.isFinite ? megapixels : 0
       guard let device = self.device else { return }
       self.session.beginConfiguration()
       self.applyResolutionPreference(for: device)
@@ -709,6 +791,14 @@ final class CameraEngine: NSObject {
     processingQueue.async {
       self.processor.loupeEnabled = enabled
     }
+  }
+
+  /// Coupe l'analyse d'image (histogramme, peaking, zebras) quand la vidéo
+  /// mange déjà tout le budget matériel. Au-delà, la session refuse de
+  /// démarrer ou lâche des images en pleine prise.
+  func setAssistOutputEnabled(_ enabled: Bool) {
+    guard let connection = videoDataOutput.connection(with: .video) else { return }
+    connection.isEnabled = enabled
   }
 
   // MARK: - Pose longue (empilement)
