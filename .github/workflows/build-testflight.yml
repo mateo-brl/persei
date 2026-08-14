@@ -15,9 +15,13 @@ jobs:
     uses: ./.github/workflows/checks.yml
   native-tests:
     uses: ./.github/workflows/native-tests.yml
+  # Compile le projet natif et vérifie que l'app démarre dans un simulateur :
+  # une app qui se lie mais meurt au lancement passerait tous les autres tests.
+  ios-compile:
+    uses: ./.github/workflows/ios-compile.yml
 
   build:
-    needs: [checks, native-tests]
+    needs: [checks, native-tests, ios-compile]
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
