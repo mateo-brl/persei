@@ -6,7 +6,6 @@ import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
@@ -23,172 +22,35 @@ import {
 import { Histogram } from '../components/histogram';
 import { LevelIndicator } from '../components/level-indicator';
 import { RulerSlider } from '../components/ruler-slider';
+import {
+  describeCapture,
+  formatError,
+  formatFocus,
+  formatShutter,
+  formatZoomFactor,
+} from '../lib/format';
+import { HELP_TEXTS } from '../lib/help';
+import { shouldAutoNight } from '../lib/night';
+import { planPreset, SCENE_PRESETS, type ScenePreset } from '../lib/presets';
+import {
+  evStopsFor,
+  FOCUS_STOPS,
+  isoStopsFor,
+  nearestIndex,
+  shutterStopsFor,
+  TINT_STOPS,
+  TORCH_STOPS,
+  WB_STOPS,
+} from '../lib/scales';
+import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
 
 const ACCENT = '#ffb800';
 
-function formatZoomFactor(factor: number): string {
-  return `${(Math.round(factor * 10) / 10).toString().replace('.', ',')}×`;
-}
-
-/** Durées de pose proposées (secondes) — aucun plafond matériel, c'est de l'empilement. */
+/** Durées de pose proposées (secondes). Pas de plafond, c'est de l'empilement. */
 const POSE_DURATIONS = [10, 30, 60, 300, 900, 1800];
 const POSE_DURATION_LABELS = ['10 s', '30 s', '1 min', '5 min', '15 min', '30 min'];
 
-/** Presets scénario : un tap règle exposition, focus, durée et style de pose. */
-interface ScenePreset {
-  id: string;
-  emoji: string;
-  label: string;
-  description: string;
-  duration: number;
-  style: StackMode;
-  /** ISO manuel (trames de 1 s), ou null pour empiler des trames auto (jour). */
-  iso: number | null;
-  /** Position de focus manuelle (1 = ∞), ou null pour laisser l'autofocus. */
-  focus: number | null;
-}
-
-const SCENE_PRESETS: ScenePreset[] = [
-  {
-    id: 'meteors',
-    emoji: '🌠',
-    label: 'Étoiles filantes',
-    description:
-      "Une minute de pose en mode Les deux. La fusion max garde les traînées, la moyenne donne un ciel propre. ISO 1600, focus sur ∞, capteur principal 1×. Cale bien le téléphone.",
-    duration: 60,
-    style: 'both',
-    iso: 1600,
-    focus: 1,
-  },
-  {
-    id: 'startrails',
-    emoji: '⭐',
-    label: 'Star trails',
-    description:
-      "Trente minutes de pose en fusion max. Les étoiles tracent des arcs autour du pôle. ISO 800, focus sur ∞. Pense à la batterie.",
-    duration: 1800,
-    style: 'max',
-    iso: 800,
-    focus: 1,
-  },
-  {
-    id: 'water',
-    emoji: '💧',
-    label: "Filé d'eau",
-    description:
-      "Dix secondes en moyenne, exposition automatique : les trames courtes s'empilent et l'eau devient soyeuse, même en plein jour.",
-    duration: 10,
-    style: 'mean',
-    iso: null,
-    focus: null,
-  },
-  {
-    id: 'fireworks',
-    emoji: '🎆',
-    label: "Feux d'artifice",
-    description:
-      "Dix secondes en fusion max. Toutes les gerbes du bouquet s'accumulent sur une seule image. ISO 100, focus sur ∞.",
-    duration: 10,
-    style: 'max',
-    iso: 100,
-    focus: 1,
-  },
-  {
-    id: 'lighttrails',
-    emoji: '🌃',
-    label: 'Light trails',
-    description:
-      "Trente secondes en fusion max. Les phares dessinent des rubans de lumière dans la ville. ISO 50.",
-    duration: 30,
-    style: 'max',
-    iso: 50,
-    focus: null,
-  },
-];
-
-const ISO_BASE = [
-  25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
-  2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800,
-];
-
-const SHUTTER_BASE = [
-  1 / 16000, 1 / 12800, 1 / 10000, 1 / 8000, 1 / 6400, 1 / 5000, 1 / 4000, 1 / 3200, 1 / 2500,
-  1 / 2000, 1 / 1600, 1 / 1250, 1 / 1000, 1 / 800, 1 / 640, 1 / 500, 1 / 400, 1 / 320, 1 / 250,
-  1 / 200, 1 / 160, 1 / 125, 1 / 100, 1 / 80, 1 / 60, 1 / 50, 1 / 40, 1 / 30, 1 / 25, 1 / 20,
-  1 / 15, 1 / 13, 1 / 10, 1 / 8, 1 / 6, 1 / 5, 1 / 4, 1 / 3, 0.4, 0.5, 0.6, 0.8, 1,
-];
-
-const FOCUS_STOPS = Array.from({ length: 101 }, (_, i) => i / 100);
-const WB_STOPS = Array.from({ length: 56 }, (_, i) => 2500 + i * 100);
-const TINT_STOPS = Array.from({ length: 61 }, (_, i) => -150 + i * 5);
-const TORCH_STOPS = Array.from({ length: 21 }, (_, i) => i / 20);
-
 type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb' | 'tint';
-
-/** Explications pédagogiques : effet de chaque réglage sur la photo. */
-const HELP_TEXTS: Record<string, string> = {
-  iso: "Sensibilité du capteur. En bas de la plage (25 à 100), l'image est propre mais sombre. Plus tu montes, plus elle s'éclaircit et plus le grain apparaît. Pour les étoiles, vise 1600 à 3200.",
-  shutter:
-    "Temps pendant lequel le capteur reçoit la lumière. Une vitesse rapide (1/500) fige le mouvement. Une vitesse lente capte plus de lumière, mais le moindre tremblement floute l'image. Pour les étoiles, 1 s sur trépied.",
-  ev: "Correction d'exposition en mode auto. Vers + la photo s'éclaircit, vers − elle s'assombrit. Les autres réglages ne bougent pas.",
-  focus:
-    "Mise au point manuelle. 0 fait le net tout près, ∞ au loin. Pour un ciel étoilé ou un paysage, mets ∞.",
-  wb: "Température de couleur en kelvins. 2500 K tire vers le bleu, 8000 K vers l'orangé. Sert à corriger la couleur de la lumière ambiante.",
-  tint: "Complète la température sur l'axe vert-magenta. Utile sous les néons ou les LED qui verdissent l'image.",
-  flash: "Éclair au déclenchement. En auto, il ne part que si la scène est sombre.",
-  torch:
-    "Lampe allumée en continu pendant la visée, avec intensité réglable. Pratique en vidéo ou pour faire le point la nuit.",
-  resolution:
-    "En 48 MP tu gardes un maximum de détails et tu peux recadrer large, mais les fichiers pèsent environ quatre fois plus. Le 12 MP fusionne les pixels : fichiers légers et meilleur rendu en basse lumière.",
-  quality:
-    "Niveau de traitement appliqué par l'iPhone. Max fusionne plusieurs images, c'est plus net mais un peu plus lent. Vitesse capture immédiatement avec un traitement minimal, au rendu plus brut.",
-  bracket:
-    "Trois photos d'affilée : une sombre, une normale, une claire. Tu choisis la bonne ensuite, ou tu les fusionnes en HDR.",
-  livePhoto: "Enregistre environ 1,5 s de vidéo autour de la photo, sauvée dans un fichier séparé.",
-  depth: "Enregistre la carte de profondeur avec la photo, pour les effets portrait en retouche.",
-  timer: "Retarde le déclenchement. Le temps de caler le téléphone ou d'entrer dans le cadre.",
-  grid: "Grille des tiers. Place ton sujet sur une ligne ou une intersection, la composition respire mieux.",
-  nightVision:
-    "Passe toute l'interface en rouge sombre. Tes yeux mettent 20 à 30 minutes à se réhabituer au noir après un écran lumineux, le rouge évite de perdre cette adaptation.",
-  peaking:
-    "Surligne en vert les zones nettes de l'image. C'est le plus simple pour réussir une mise au point manuelle, surtout la nuit.",
-  zebras:
-    "Marque en rouge les zones surexposées. Si une zone importante se raye, baisse l'ISO ou accélère la vitesse.",
-  histogram:
-    "Répartition des luminosités, ombres à gauche, hautes lumières à droite. Un paquet collé à droite signale une photo cramée, collé à gauche une photo bouchée.",
-  level:
-    "La ligne suit l'inclinaison du téléphone et devient verte quand l'horizon est droit.",
-  align:
-    "Recale chaque image sur la première pendant la pose. Permet de poser sans trépied si tu restes à peu près stable.",
-  meteorFilter:
-    "Ne garde pour la fusion max que les images où quelque chose est passé dans le ciel. Les traînées ressortent sur un fond plus propre.",
-  autoNight:
-    "Quand la scène est sombre et que tu es en photo simple, le déclencheur lance automatiquement une pose alignée de 10 s au lieu d'un cliché bruité. L'équivalent du mode Nuit d'Apple, en mieux réglable.",
-};
-
-function formatError(e: unknown): string {
-  const err = e as { code?: string; message?: string };
-  if (err?.message) return err.code ? `${err.code} ${err.message}` : err.message;
-  return String(e);
-}
-
-function nearestIndex(values: number[], target: number): number {
-  let best = 0;
-  for (let i = 1; i < values.length; i++) {
-    if (Math.abs(values[i] - target) < Math.abs(values[best] - target)) best = i;
-  }
-  return best;
-}
-
-function formatShutter(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
-  if (seconds >= 0.4) return `${seconds.toFixed(1)}s`;
-  return `1/${Math.round(1 / seconds)}`;
-}
-
-function formatFocus(position: number): string {
-  return position >= 0.99 ? '∞' : position.toFixed(2);
-}
 
 export default function CameraScreen() {
   const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
@@ -201,15 +63,19 @@ export default function CameraScreen() {
   const [posing, setPosing] = useState(false);
   const [poseProgress, setPoseProgress] = useState<{ frame: number; total: number } | null>(null);
 
+  // Les réglages manuels sont gardés en valeur, jamais en index de molette.
+  // Quand les plages changent (frontale, autre objectif), la valeur reste
+  // juste et sa position sur la molette se recalcule ; un index conservé d'une
+  // plage à l'autre pointait dans le vide et partait en NaN au capteur.
   const [exposureAuto, setExposureAuto] = useState(true);
   const [focusAuto, setFocusAuto] = useState(true);
   const [wbAuto, setWbAuto] = useState(true);
-  const [isoIdx, setIsoIdx] = useState(0);
-  const [shutterIdx, setShutterIdx] = useState(0);
-  const [evIdx, setEvIdx] = useState(0);
-  const [focusIdx, setFocusIdx] = useState(FOCUS_STOPS.length - 1);
-  const [wbIdx, setWbIdx] = useState(30);
-  const [tintIdx, setTintIdx] = useState(30);
+  const [isoValue, setIsoValue] = useState(100);
+  const [shutterValue, setShutterValue] = useState(1 / 60);
+  const [evValue, setEvValue] = useState(0);
+  const [focusValue, setFocusValue] = useState(1);
+  const [wbKelvin, setWbKelvin] = useState(5500);
+  const [tintValue, setTintValue] = useState(0);
 
   // Réglages secondaires (tiroir).
   const [showSettings, setShowSettings] = useState(false);
@@ -247,25 +113,17 @@ export default function CameraScreen() {
 
   const position: CameraPosition = front ? 'front' : 'back';
 
-  const isoStops = useMemo(
-    () => (caps ? ISO_BASE.filter((v) => v >= caps.minIso && v <= caps.maxIso) : ISO_BASE),
-    [caps]
-  );
-  const shutterStops = useMemo(
-    () =>
-      caps
-        ? SHUTTER_BASE.filter((v) => v >= caps.minShutter && v <= caps.maxShutter)
-        : SHUTTER_BASE,
-    [caps]
-  );
-  const evStops = useMemo(() => {
-    if (!caps) return [0];
-    const stops: number[] = [];
-    for (let v = caps.minExposureBias; v <= caps.maxExposureBias + 0.01; v += 1 / 3) {
-      stops.push(Math.round(v * 10) / 10);
-    }
-    return stops;
-  }, [caps]);
+  const isoStops = useMemo(() => isoStopsFor(caps), [caps]);
+  const shutterStops = useMemo(() => shutterStopsFor(caps), [caps]);
+  const evStops = useMemo(() => evStopsFor(caps), [caps]);
+
+  // Position des molettes, déduite des valeurs courantes.
+  const isoIdx = nearestIndex(isoStops, isoValue);
+  const shutterIdx = nearestIndex(shutterStops, shutterValue);
+  const evIdx = nearestIndex(evStops, evValue);
+  const focusIdx = nearestIndex(FOCUS_STOPS, focusValue);
+  const wbIdx = nearestIndex(WB_STOPS, wbKelvin);
+  const tintIdx = nearestIndex(TINT_STOPS, tintValue);
 
   useEffect(() => {
     (async () => {
@@ -291,20 +149,6 @@ export default function CameraScreen() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
-
-  // La molette EV démarre à 0, pas au minimum de la plage.
-  useEffect(() => {
-    setEvIdx(nearestIndex(evStops, 0));
-  }, [evStops]);
-
-  // Les plages rétrécissent en passant sur la frontale : reclamper les
-  // indices, sinon isoStops[isoIdx] devient undefined et part au natif.
-  useEffect(() => {
-    setIsoIdx((i) => Math.min(i, isoStops.length - 1));
-  }, [isoStops]);
-  useEffect(() => {
-    setShutterIdx((i) => Math.min(i, shutterStops.length - 1));
-  }, [shutterStops]);
 
   // Aides de visée natives + loupe automatique pendant le réglage du focus.
   useEffect(() => {
@@ -347,13 +191,13 @@ export default function CameraScreen() {
   useEffect(() => {
     if (!caps) return;
     if (!exposureAuto) {
-      PerseiCamera.setManualExposure(isoStops[isoIdx], shutterStops[shutterIdx]).catch(() => {});
+      PerseiCamera.setManualExposure(isoValue, shutterValue).catch(() => {});
     }
     if (!focusAuto) {
-      PerseiCamera.setLensPosition(FOCUS_STOPS[focusIdx]).catch(() => {});
+      PerseiCamera.setLensPosition(focusValue).catch(() => {});
     }
     if (!wbAuto) {
-      PerseiCamera.setWhiteBalance(WB_STOPS[wbIdx], TINT_STOPS[tintIdx]).catch(() => {});
+      PerseiCamera.setWhiteBalance(wbKelvin, tintValue).catch(() => {});
     }
     if (torch > 0 && caps.hasTorch) {
       PerseiCamera.setTorchLevel(torch).catch(() => {});
@@ -370,18 +214,19 @@ export default function CameraScreen() {
     PerseiCamera.setManualExposure(iso, shutter).catch(() => {});
   }, []);
 
-  const applyWb = useCallback((kelvinIdx: number, tIdx: number) => {
-    PerseiCamera.setWhiteBalance(WB_STOPS[kelvinIdx], TINT_STOPS[tIdx]).catch(() => {});
+  const applyWb = useCallback((kelvin: number, tint: number) => {
+    PerseiCamera.setWhiteBalance(kelvin, tint).catch(() => {});
   }, []);
 
+  /** Passage en manuel : on part des valeurs que le capteur affiche déjà. */
   const enterManualExposure = useCallback(() => {
     const current = liveRef.current;
-    const iIdx = nearestIndex(isoStops, current?.iso ?? 100);
-    const sIdx = nearestIndex(shutterStops, current?.shutter ?? 1 / 60);
-    setIsoIdx(iIdx);
-    setShutterIdx(sIdx);
+    const iso = isoStops[nearestIndex(isoStops, current?.iso ?? 100)];
+    const shutter = shutterStops[nearestIndex(shutterStops, current?.shutter ?? 1 / 60)];
+    setIsoValue(iso);
+    setShutterValue(shutter);
     setExposureAuto(false);
-    applyManualExposure(isoStops[iIdx], shutterStops[sIdx]);
+    applyManualExposure(iso, shutter);
   }, [isoStops, shutterStops, applyManualExposure]);
 
   const paramToAuto = useCallback(
@@ -396,46 +241,57 @@ export default function CameraScreen() {
         setWbAuto(true);
         PerseiCamera.setAutoWhiteBalance().catch(() => {});
       } else if (param === 'ev') {
-        const zero = nearestIndex(evStops, 0);
-        setEvIdx(zero);
+        setEvValue(0);
         PerseiCamera.setExposureBias(0).catch(() => {});
       }
     },
-    [evStops]
+    []
   );
 
   const onRulerChange = useCallback(
     (param: ParamKey, index: number) => {
       switch (param) {
-        case 'iso':
+        case 'iso': {
           if (exposureAuto) enterManualExposure();
-          setIsoIdx(index);
-          applyManualExposure(isoStops[index], shutterStops[shutterIdx]);
+          const iso = isoStops[index];
+          setIsoValue(iso);
+          applyManualExposure(iso, shutterValue);
           break;
-        case 'shutter':
+        }
+        case 'shutter': {
           if (exposureAuto) enterManualExposure();
-          setShutterIdx(index);
-          applyManualExposure(isoStops[isoIdx], shutterStops[index]);
+          const shutter = shutterStops[index];
+          setShutterValue(shutter);
+          applyManualExposure(isoValue, shutter);
           break;
-        case 'ev':
-          setEvIdx(index);
-          PerseiCamera.setExposureBias(evStops[index]).catch(() => {});
+        }
+        case 'ev': {
+          const ev = evStops[index];
+          setEvValue(ev);
+          PerseiCamera.setExposureBias(ev).catch(() => {});
           break;
-        case 'focus':
+        }
+        case 'focus': {
+          const focus = FOCUS_STOPS[index];
           setFocusAuto(false);
-          setFocusIdx(index);
-          PerseiCamera.setLensPosition(FOCUS_STOPS[index]).catch(() => {});
+          setFocusValue(focus);
+          PerseiCamera.setLensPosition(focus).catch(() => {});
           break;
-        case 'wb':
+        }
+        case 'wb': {
+          const kelvin = WB_STOPS[index];
           setWbAuto(false);
-          setWbIdx(index);
-          applyWb(index, tintIdx);
+          setWbKelvin(kelvin);
+          applyWb(kelvin, tintValue);
           break;
-        case 'tint':
+        }
+        case 'tint': {
+          const tint = TINT_STOPS[index];
           setWbAuto(false);
-          setTintIdx(index);
-          applyWb(wbIdx, index);
+          setTintValue(tint);
+          applyWb(wbKelvin, tint);
           break;
+        }
       }
     },
     [
@@ -445,27 +301,25 @@ export default function CameraScreen() {
       applyWb,
       isoStops,
       shutterStops,
-      isoIdx,
-      shutterIdx,
+      isoValue,
+      shutterValue,
       evStops,
-      wbIdx,
-      tintIdx,
+      wbKelvin,
+      tintValue,
     ]
   );
 
   const openParam = useCallback(
     (param: ParamKey) => {
       setActiveParam((prev) => (prev === param ? null : param));
+      // La molette s'ouvre là où le capteur est, pas au début de l'échelle.
       const current = liveRef.current;
-      if (param === 'iso' && exposureAuto) setIsoIdx(nearestIndex(isoStops, current?.iso ?? 100));
-      if (param === 'shutter' && exposureAuto)
-        setShutterIdx(nearestIndex(shutterStops, current?.shutter ?? 1 / 60));
-      if (param === 'focus' && focusAuto)
-        setFocusIdx(nearestIndex(FOCUS_STOPS, current?.lensPosition ?? 1));
-      if (param === 'wb' && wbAuto)
-        setWbIdx(nearestIndex(WB_STOPS, current?.whiteBalanceKelvin || 5500));
+      if (param === 'iso' && exposureAuto) setIsoValue(current?.iso ?? 100);
+      if (param === 'shutter' && exposureAuto) setShutterValue(current?.shutter ?? 1 / 60);
+      if (param === 'focus' && focusAuto) setFocusValue(current?.lensPosition ?? 1);
+      if (param === 'wb' && wbAuto) setWbKelvin(current?.whiteBalanceKelvin || 5500);
     },
-    [exposureAuto, focusAuto, wbAuto, isoStops, shutterStops]
+    [exposureAuto, focusAuto, wbAuto]
   );
 
   const zoomBase = useRef(1);
@@ -474,9 +328,7 @@ export default function CameraScreen() {
   }, []);
   const applyZoom = useCallback(
     (scale: number) => {
-      const min = caps?.minZoom ?? 1;
-      const max = Math.min(caps?.maxZoom ?? 6, 10);
-      const next = Math.min(Math.max(zoomBase.current * scale, min), Math.min(max, 50));
+      const next = pinchZoom(zoomBase.current, scale, caps?.minZoom ?? 1, caps?.maxZoom ?? 6);
       PerseiCamera.setZoom(next).catch(() => {});
     },
     [caps]
@@ -485,32 +337,38 @@ export default function CameraScreen() {
   /** Applique un preset scénario : exposition, focus, durée et style de pose. */
   const applyPreset = useCallback(
     (preset: ScenePreset) => {
+      const plan = planPreset(preset, {
+        isoStops,
+        shutterStops,
+        zoomPresets: caps?.zoomPresets ?? [],
+      });
       setCaptureMode('pose');
-      setPoseDuration(preset.duration);
-      setPoseStyle(preset.style);
-      if (preset.iso != null) {
-        const iIdx = nearestIndex(isoStops, preset.iso);
-        const sIdx = nearestIndex(shutterStops, 1);
-        setIsoIdx(iIdx);
-        setShutterIdx(sIdx);
+      setPoseDuration(plan.duration);
+      setPoseStyle(plan.style);
+
+      if (plan.exposure.mode === 'manual') {
+        const iso = isoStops[plan.exposure.isoIndex];
+        const shutter = shutterStops[plan.exposure.shutterIndex];
+        setIsoValue(iso);
+        setShutterValue(shutter);
         setExposureAuto(false);
-        PerseiCamera.setManualExposure(isoStops[iIdx], shutterStops[sIdx]).catch(() => {});
+        PerseiCamera.setManualExposure(iso, shutter).catch(() => {});
       } else {
         setExposureAuto(true);
         PerseiCamera.setAutoExposure().catch(() => {});
       }
-      if (preset.focus != null) {
-        const fIdx = nearestIndex(FOCUS_STOPS, preset.focus);
+
+      if (plan.focus.mode === 'locked') {
+        const focus = FOCUS_STOPS[plan.focus.focusIndex];
         setFocusAuto(false);
-        setFocusIdx(fIdx);
-        PerseiCamera.setLensPosition(FOCUS_STOPS[fIdx]).catch(() => {});
-        // Scènes de ciel : cadrer sur le capteur principal (1×), le meilleur.
-        const wide = caps?.zoomPresets.find((z) => z.factor === 1);
-        if (wide) PerseiCamera.setZoom(wide.zoom).catch(() => {});
+        setFocusValue(focus);
+        PerseiCamera.setLensPosition(focus).catch(() => {});
       } else {
         setFocusAuto(true);
         PerseiCamera.setAutoFocus().catch(() => {});
       }
+
+      if (plan.zoom != null) PerseiCamera.setZoom(plan.zoom).catch(() => {});
       setShowPresets(false);
       setToast(`${preset.emoji} Preset « ${preset.label} » appliqué`);
     },
@@ -529,8 +387,8 @@ export default function CameraScreen() {
       }
       // ISO de pose : la valeur manuelle si définie, sinon 1600 (ciel étoilé).
       // Manuel (nuit) : trames de 1 s à l'ISO choisi. Auto (jour) : trames
-      // auto courtes empilées — le bon rendu pose longue en pleine lumière.
-      const iso = exposureAuto ? 1600 : isoStops[isoIdx];
+      // auto courtes empilées, le bon rendu pose longue en pleine lumière.
+      const iso = exposureAuto ? 1600 : isoValue;
       const uris = await PerseiCamera.startLongExposure(
         poseDuration,
         iso,
@@ -552,34 +410,33 @@ export default function CameraScreen() {
       // Le natif repasse en exposition auto à la fin d'une pose : si
       // l'utilisateur était en manuel, on réapplique ses réglages.
       if (!exposureAuto) {
-        applyManualExposure(isoStops[isoIdx], shutterStops[shutterIdx]);
+        applyManualExposure(isoValue, shutterValue);
       }
     }
   }, [
     exposureAuto,
-    isoStops,
-    isoIdx,
-    shutterStops,
-    shutterIdx,
+    isoValue,
+    shutterValue,
     applyManualExposure,
     poseDuration,
     poseStyle,
     poseAlign,
     poseMeteor,
   ]);
+
+  // Le pincement pilote un réglage matériel asynchrone : inutile de le tenir
+  // sur le thread UI, tout repasse côté JS de toute façon.
+  /* eslint-disable react-hooks/refs -- le zoom de départ est lu quand le doigt
+     se pose, pas au rendu : la lecture vit dans le callback du geste. */
   const pinch = useMemo(
     () =>
       Gesture.Pinch()
-        .onStart(() => {
-          'worklet';
-          runOnJS(rememberZoom)();
-        })
-        .onUpdate((e) => {
-          'worklet';
-          runOnJS(applyZoom)(e.scale);
-        }),
+        .runOnJS(true)
+        .onStart(rememberZoom)
+        .onUpdate((e) => applyZoom(e.scale)),
     [rememberZoom, applyZoom]
   );
+  /* eslint-enable react-hooks/refs */
 
   const shoot = useCallback(async () => {
     setCapturing(true);
@@ -657,12 +514,12 @@ export default function CameraScreen() {
       }
       return;
     }
-    // Mode nuit auto : scène sombre détectée sur le capteur (l'auto pousse
-    // ISO et vitesse à fond) → pose alignée au lieu d'un cliché bruité.
-    const live = liveRef.current;
-    const darkScene = live != null && live.iso > 1500 && live.shutter > 1 / 35;
-    if (autoNight && exposureAuto && !front && timerSecs === 0 && darkScene) {
-      if (!posing) captureNightShot();
+    // Mode nuit auto : scène sombre lue au capteur (l'auto pousse ISO et
+    // vitesse à fond), donc pose alignée au lieu d'un cliché bruité.
+    if (
+      shouldAutoNight({ autoNight, exposureAuto, front, timerSecs, posing, live: liveRef.current })
+    ) {
+      captureNightShot();
       return;
     }
     capture();
@@ -681,9 +538,12 @@ export default function CameraScreen() {
     captureNightShot,
   ]);
 
-  // Boutons volume / Camera Control = déclencheur physique.
+  // Boutons volume / Camera Control = déclencheur physique. L'abonnement natif
+  // ne se refait pas à chaque rendu, il appelle toujours la dernière version.
   const shutterRef = useRef(triggerShutter);
-  shutterRef.current = triggerShutter;
+  useEffect(() => {
+    shutterRef.current = triggerShutter;
+  }, [triggerShutter]);
   useEffect(() => {
     const sub = PerseiCamera.addListener('onShutterButton', () => shutterRef.current());
     return () => sub.remove();
@@ -693,7 +553,7 @@ export default function CameraScreen() {
     return (
       <SafeAreaView style={styles.centered}>
         <Text style={styles.deniedText}>
-          Persei a besoin de l'appareil photo. Autorise-le dans Réglages → Persei.
+          Persei a besoin de l’appareil photo. Autorise-le dans Réglages → Persei.
         </Text>
       </SafeAreaView>
     );
@@ -821,7 +681,7 @@ export default function CameraScreen() {
 
           {updateReady ? (
             <Pressable style={styles.updateBanner} onPress={() => Updates.reloadAsync()}>
-              <Text style={styles.updateText}>Mise à jour prête. Touche pour l'appliquer.</Text>
+              <Text style={styles.updateText}>Mise à jour prête. Touche pour l’appliquer.</Text>
             </Pressable>
           ) : null}
 
@@ -1018,18 +878,7 @@ export default function CameraScreen() {
             </View>
           ) : null}
 
-          {posing ? (
-            <View style={styles.toast}>
-              <Text style={styles.toastText}>
-                {poseProgress && poseProgress.frame >= poseProgress.total
-                  ? 'Assemblage du rendu… quelques secondes.'
-                  : `Pose en cours (${poseProgress ? `${poseProgress.frame}/${poseProgress.total} s` : 'préparation'}). Ne bouge pas le téléphone.`}
-                {liveRef.current
-                  ? `\nCapteur : ISO ${Math.round(liveRef.current.iso)} · ${formatShutter(liveRef.current.shutter)}`
-                  : ''}
-              </Text>
-            </View>
-          ) : null}
+          {posing ? <PoseBanner progress={poseProgress} /> : null}
 
           {!front && !posing ? (
             <Segmented
@@ -1133,24 +982,14 @@ export default function CameraScreen() {
           <ScrollView contentContainerStyle={styles.viewerContent}>
             {lastUris.map((uri) => (
               <View key={uri} style={styles.viewerItem}>
-                <Text style={styles.viewerLabel}>
-                  {uri.includes('-lueur')
-                    ? 'Lueur (moyenne)'
-                    : uri.includes('-etoiles')
-                      ? 'Étoiles (fusion max)'
-                      : uri.endsWith('.dng')
-                        ? 'RAW'
-                        : uri.endsWith('.mov')
-                          ? 'Live Photo (vidéo)'
-                          : 'Photo'}
-                </Text>
+                <Text style={styles.viewerLabel}>{describeCapture(uri)}</Text>
                 {!uri.endsWith('.mov') ? (
                   <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
                 ) : null}
               </View>
             ))}
             <Text style={styles.viewerHint}>
-              Enregistrée dans Photos. Touche l'écran pour fermer.
+              Enregistrée dans Photos. Touche l’écran pour fermer.
             </Text>
           </ScrollView>
         </Pressable>
@@ -1203,17 +1042,10 @@ function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
   }, []);
   if (!presets.length) return null;
 
-  let activeIndex = 0;
-  for (let i = 0; i < presets.length; i++) {
-    if (zoom >= presets[i].zoom - 0.01) activeIndex = i;
-  }
-  // Zoom affiché relatif au 1× (le videoZoomFactor du device virtuel compte
-  // depuis l'ultra grand-angle).
-  const wideZoom = presets.find((p) => p.factor === 1)?.zoom ?? 1;
-  const displayZoom = zoom / wideZoom;
-  // Badge du zoom courant seulement en position intermédiaire (pincement) —
+  const activeIndex = activeZoomIndex(presets, zoom);
+  // Badge du zoom courant seulement en position intermédiaire (pincement),
   // sinon il ressemble à une pastille en double.
-  const onPreset = presets.some((p) => Math.abs(displayZoom - p.factor) < 0.06);
+  const onPreset = isOnPreset(presets, zoom);
 
   return (
     <View style={styles.lensRow}>
@@ -1228,7 +1060,35 @@ function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
           </Text>
         </Pressable>
       ))}
-      {!onPreset ? <Text style={styles.zoomText}>{formatZoomFactor(displayZoom)}</Text> : null}
+      {!onPreset ? (
+        <Text style={styles.zoomText}>{formatZoomFactor(displayZoom(presets, zoom))}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Bandeau de pose : progression et lecture capteur en direct. Abonné seul,
+ * comme la barre de valeurs, pour ne pas re-rendre tout l'écran à 10 Hz.
+ */
+function PoseBanner({ progress }: { progress: { frame: number; total: number } | null }) {
+  const [live, setLive] = useState<ExposureUpdate | null>(null);
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onExposureUpdate', setLive);
+    return () => sub.remove();
+  }, []);
+
+  const assembling = progress != null && progress.frame >= progress.total;
+  const avancement = progress ? `${progress.frame}/${progress.total} s` : 'préparation';
+
+  return (
+    <View style={styles.toast}>
+      <Text style={styles.toastText}>
+        {assembling
+          ? 'Assemblage du rendu… quelques secondes.'
+          : `Pose en cours (${avancement}). Ne bouge pas le téléphone.`}
+        {live ? `\nCapteur : ISO ${Math.round(live.iso)} · ${formatShutter(live.shutter)}` : ''}
+      </Text>
     </View>
   );
 }

@@ -9,7 +9,15 @@ on:
 concurrency: { group: ios-build, cancel-in-progress: false }
 
 jobs:
+  # Aucun build ne part sur du rouge : la règle du projet est qu'on ne pose un
+  # tag que sur des tests verts, et la CI la fait respecter.
+  checks:
+    uses: ./.github/workflows/checks.yml
+  native-tests:
+    uses: ./.github/workflows/native-tests.yml
+
   build:
+    needs: [checks, native-tests]
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
