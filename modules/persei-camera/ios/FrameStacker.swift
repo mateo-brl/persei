@@ -206,13 +206,14 @@ final class FrameStacker {
     autoStretch(image)
   }
 
-  /// Mesure le pic de luminosité (en LINÉAIRE, l'espace de travail Core
-  /// Image, lu en demi-flottants pour ne pas quantifier les scènes de nuit
-  /// à zéro) ; si la scène est sombre, remonte l'exposition jusqu'à +4 EV.
-  /// Seuils en linéaire : 0,38 ≈ 65 % affiché, 0,68 ≈ 85 % affiché.
+  /// Mesure la luminance MOYENNE en linéaire (demi-flottants : les scènes de
+  /// nuit ne se quantifient pas à zéro). La moyenne plutôt que le pic : une
+  /// étoile brillante ne doit pas empêcher d'étirer un ciel sombre, et une
+  /// scène normale ne doit pas être « corrigée ». Seuil 0,03 linéaire ≈ 20 %
+  /// affiché ; cible 0,07 ≈ 30 % affiché ; plafond +4 EV.
   private func autoStretch(_ image: CIImage) -> CIImage {
-    guard let peakImage = CIFilter(
-      name: "CIAreaMaximum",
+    guard let averageImage = CIFilter(
+      name: "CIAreaAverage",
       parameters: [
         kCIInputImageKey: image,
         kCIInputExtentKey: CIVector(cgRect: image.extent),
@@ -222,7 +223,7 @@ final class FrameStacker {
     var pixel = [Float16](repeating: 0, count: 4)
     pixel.withUnsafeMutableBytes { buffer in
       ciContext.render(
-        peakImage,
+        averageImage,
         toBitmap: buffer.baseAddress!,
         rowBytes: 8,
         bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
@@ -230,10 +231,10 @@ final class FrameStacker {
         colorSpace: nil
       )
     }
-    let peak = Double(max(pixel[0], max(pixel[1], pixel[2])))
-    guard peak.isFinite, peak > 0.00002, peak < 0.38 else { return image }
+    let average = Double(max(pixel[0], max(pixel[1], pixel[2])))
+    guard average.isFinite, average > 0.000001, average < 0.03 else { return image }
 
-    let ev = min(4.0, log2(0.68 / peak))
+    let ev = min(4.0, log2(0.07 / average))
     guard ev > 0.2 else { return image }
     return image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
   }
