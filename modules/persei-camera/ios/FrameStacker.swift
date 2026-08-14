@@ -21,6 +21,9 @@ final class FrameStacker {
   private var sumFrameCount = 0
   private var maxFrameCount = 0
   private var referenceFrame: CIImage?
+  /// True dès qu'une trame RAW est empilée : le rendu final applique alors
+  /// la conversion linéaire → affichage (gamma) après l'étirement.
+  private var stackedLinearRaw = false
   private let ciContext = CIContext()
 
   init(mode: String, align: Bool = false, meteorFilter: Bool = false) {
@@ -37,9 +40,28 @@ final class FrameStacker {
     // l'appelant juste après, et un CIImage(contentsOf:) paresseux pointerait
     // vers un fichier disparu (crash au rendu, notamment via la référence
     // d'alignement conservée entre les trames).
-    guard let data = try? Data(contentsOf: url),
-          var frame = CIImage(data: data, options: [.applyOrientationProperty: true])
-    else { return }
+    guard let data = try? Data(contentsOf: url) else { return }
+
+    var decoded: CIImage?
+    if url.absoluteString.lowercased().hasSuffix(".dng") {
+      // Trame RAW : décodage linéaire, sans « look » ni réduction de bruit —
+      // c'est elle qui gommerait les étoiles faibles avant l'empilement.
+      if let rawFilter = CIRAWFilter(imageData: data, identifierHint: nil) {
+        rawFilter.boostAmount = 0
+        rawFilter.luminanceNoiseReductionAmount = 0
+        rawFilter.colorNoiseReductionAmount = 0
+        decoded = rawFilter.outputImage
+        if decoded != nil {
+          stackedLinearRaw = true
+        }
+      }
+    }
+    if decoded == nil {
+      decoded = CIImage(data: data, options: [.applyOrientationProperty: true])
+    }
+    // Pas de rendu intermédiaire : l'accumulateur (RGBAh) évalue le graphe
+    // RAW en demi-flottants — un CGImage 8 bits ici perdrait le linéaire.
+    guard var frame = decoded else { return }
 
     if alignEnabled {
       if let reference = referenceFrame {
@@ -162,13 +184,13 @@ final class FrameStacker {
       // La moyenne réduit le bruit mais n'éclaircit pas : étirement
       // automatique de l'exposition pour les scènes sombres (nuit), neutre
       // sur les scènes déjà exposées.
-      if let uri = write(image: autoStretch(mean), suffix: "lueur", colorSpace: colorSpace) {
+      if let uri = write(image: displayRender(of: mean), suffix: "lueur", colorSpace: colorSpace) {
         uris.append(uri)
       }
     }
 
     if let accumulator = maxAccumulator {
-      if let uri = write(image: autoStretch(accumulator.image()), suffix: "etoiles", colorSpace: colorSpace) {
+      if let uri = write(image: displayRender(of: accumulator.image()), suffix: "etoiles", colorSpace: colorSpace) {
         uris.append(uri)
       }
     }
@@ -176,6 +198,16 @@ final class FrameStacker {
     return uris.isEmpty
       ? .failure(CameraEngineError.captureFailed("P32: stack rendering failed"))
       : .success(uris)
+  }
+
+  /// Étirement + conversion d'affichage. En RAW linéaire : gain d'exposition
+  /// dans l'espace linéaire (physiquement juste) puis gamma d'affichage.
+  private func displayRender(of image: CIImage) -> CIImage {
+    var output = autoStretch(image)
+    if stackedLinearRaw {
+      output = output.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.45])
+    }
+    return output
   }
 
   /// Mesure le pic de luminosité de l'image ; si la scène est sombre, remonte
