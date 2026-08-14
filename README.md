@@ -6,7 +6,11 @@ Appareil photo iOS à contrôles manuels complets — ISO, vitesse d'obturation,
 
 - **Expo SDK 57** (React Native, TypeScript, expo-router) — toute l'UI est en JS, livrable en OTA.
 - **`modules/persei-camera`** — module natif local (Swift, Expo Modules API) qui pilote AVFoundation directement : `setExposureModeCustom` (ISO + durée), `lensPosition`, gains de balance des blancs, capture ProRAW/48 MP. Tout changement ici modifie le fingerprint natif → rebuild TestFlight.
-- **CI GitHub Actions** : `ota-update.yml` (push sur main → `eas update`), `build-testflight.yml` (manuel ou tag `v*` → `eas build --local` sur runner macOS → TestFlight). Aucun Mac requis.
+- **CI GitHub Actions** : `checks.yml` (types, style, tests JS), `native-tests.yml` (XCTest du moteur d'empilement et des calculs caméra), `ios-compile.yml` (prebuild + `xcodebuild` réel, sans signature), `ota-update.yml` (push sur main → `eas update`), `build-testflight.yml` (manuel ou tag `v*` → `eas build --local` sur runner macOS → TestFlight, conditionné aux vérifications). Aucun Mac requis.
+
+## Tests
+
+`npm test` lance les tests de la logique pure JS avec le lanceur intégré de Node, sans dépendance ajoutée. `cd native-tests && swift test` (après `bash native-tests/sync-sources.sh`) teste le moteur d'empilement et les calculs caméra sur macOS. Règle du projet : on ne pose un tag de build que sur des tests verts.
 
 ## Mise en route (une fois)
 
@@ -25,6 +29,8 @@ Appareil photo iOS à contrôles manuels complets — ISO, vitesse d'obturation,
 - [x] v0.1 : préview live, exposition manuelle (ISO + vitesse), focus manuel, BdB kelvin, RAW/ProRAW, sauvegarde photothèque
 - [x] v0.2-0.3 : UI Final Cut Camera (molettes à crans, lecture capteur temps réel), frontale, flash/torche, teinte, Live Photos, profondeur, bracketing, 12/48 MP, aide ⓘ, mises à jour in-app
 - [x] v0.4 : device virtuel (zoom continu 0,5×→5×, pastilles matérielles dont crop 2×, macro auto) + **mode POSE LONGUE sans plafond** : empilement de trames 1 s en moyenne (« Lueur ») et/ou fusion max (« Étoiles » — garde les traînées de météores que le mode Nuit d'Apple efface)
-- [ ] Alignement des trames (pose à main levée), focus peaking, histogramme, zebras
-- [ ] Presets par scénario (étoiles, filé d'eau, light trails)
-- [ ] Vidéo (4K120, Apple Log, ProRes)
+- [x] v0.5 : alignement des trames (pose à main levée), focus peaking, histogramme, zebras, loupe, niveau, filtre météores, déclencheur volume et Camera Control
+- [x] v0.6-0.7 : presets par scénario, mode nuit automatique, empilement RAW linéaire, pose de jour par trames auto
+- [x] v0.8 : **vidéo** (résolutions et cadences lues sur le matériel, HDR 10 bits, Apple Log, ProRes, stabilisation, pause et reprise, photo pendant l'enregistrement, garde-fous disque et surchauffe), définitions photo 12/24/48 MP, lecture des codes QR
+- [ ] Écran verrouillé et Centre de contrôle (extensions iOS)
+- [ ] Vidéo cinématique (bokeh, iOS 26)
