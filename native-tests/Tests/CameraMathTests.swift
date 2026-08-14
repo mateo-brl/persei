@@ -135,6 +135,20 @@ final class CameraMathTests: XCTestCase {
     XCTAssertEqual(CameraMath.clampSeconds(Double.nan, in: limits), 1 / 8000, accuracy: 1e-9)
   }
 
+  // MARK: - Définition photo
+
+  /// Les dimensions posées doivent exister dans le format actif : Apple lève
+  /// une exception sinon. On choisit donc toujours dans la liste du matériel.
+  func testPhotoSizePicksFromWhatTheHardwareOffers() {
+    let sizes = [12.0, 24.0, 48.0]
+    XCTAssertEqual(CameraMath.nearestPhotoSize(sizes, target: 0), 2, "0 demande la plus grande")
+    XCTAssertEqual(CameraMath.nearestPhotoSize(sizes, target: 24), 1)
+    XCTAssertEqual(CameraMath.nearestPhotoSize(sizes, target: 30), 1, "30 MP absent : 24 est le plus proche")
+    XCTAssertEqual(CameraMath.nearestPhotoSize(sizes, target: 12), 0)
+    XCTAssertEqual(CameraMath.nearestPhotoSize([12.0], target: 48), 0, "un seul choix : celui-là")
+    XCTAssertNil(CameraMath.nearestPhotoSize([], target: 12))
+  }
+
   /// Une trame de pose dure au plus 1 s, et moins si la caméra ne suit pas :
   /// dépasser lève une exception, d'où les poses qui « duraient 5 s ».
   func testPoseFrameNeverExceedsHardwareLimit() {

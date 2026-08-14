@@ -150,4 +150,154 @@ enum CameraMath {
   static func poseFrameSeconds(in limits: ExposureLimits) -> Double {
     min(1.0, limits.maxSeconds)
   }
+
+  /// Définition photo la plus proche de celle demandée. Les dimensions posées
+  /// doivent appartenir à celles du format actif, sinon la capture lève une
+  /// exception : on choisit donc toujours dans la liste du matériel.
+  /// `target` à 0 ou négatif demande la plus grande.
+  static func nearestPhotoSize(_ available: [Double], target: Double) -> Int? {
+    guard !available.isEmpty else { return nil }
+    if target <= 0 {
+      return available.indices.max { available[$0] < available[$1] }
+    }
+    return available.indices.min { abs(available[$0] - target) < abs(available[$1] - target) }
+  }
+}
+
+// MARK: - Vidéo
+
+/// Plage de cadences supportée par un format.
+struct FrameRateRange: Equatable {
+  let min: Double
+  let max: Double
+
+  func contains(_ rate: Double) -> Bool {
+    rate >= min - 0.01 && rate <= max + 0.01
+  }
+}
+
+/// Étendue dynamique demandée pour la vidéo.
+enum VideoRange: String {
+  /// Rec.709 classique, lisible partout.
+  case sdr
+  /// HLG BT.2020 10 bits : l'iPhone y écrit du Dolby Vision automatiquement.
+  case hdr
+  /// Apple Log : image plate destinée à l'étalonnage.
+  case log
+}
+
+/// Description d'un format vidéo du device, sans dépendance à AVFoundation.
+struct VideoFormatSpec {
+  let width: Int
+  let height: Int
+  let frameRateRanges: [FrameRateRange]
+  /// Format 10 bits (`x420`), condition du HDR.
+  let isTenBit: Bool
+  /// Source 4:2:2 10 bits (`x422`), seule à autoriser ProRes.
+  let isProResSource: Bool
+  let supportsAppleLog: Bool
+  let supportsHlg: Bool
+  /// Format issu du regroupement de pixels : meilleur en basse lumière, moins
+  /// détaillé. AVFoundation en propose souvent un doublon par résolution.
+  let isBinned: Bool
+  /// Largeur de photo maximale offerte pendant la vidéo.
+  let maxPhotoWidth: Int
+
+  init(
+    width: Int,
+    height: Int,
+    frameRateRanges: [FrameRateRange],
+    isTenBit: Bool = false,
+    isProResSource: Bool = false,
+    supportsAppleLog: Bool = false,
+    supportsHlg: Bool = false,
+    isBinned: Bool = false,
+    maxPhotoWidth: Int = 0
+  ) {
+    self.width = width
+    self.height = height
+    self.frameRateRanges = frameRateRanges
+    self.isTenBit = isTenBit
+    self.isProResSource = isProResSource
+    self.supportsAppleLog = supportsAppleLog
+    self.supportsHlg = supportsHlg
+    self.isBinned = isBinned
+    self.maxPhotoWidth = maxPhotoWidth
+  }
+
+  var maxFrameRate: Double { frameRateRanges.map(\.max).max() ?? 0 }
+  func supports(frameRate: Double) -> Bool { frameRateRanges.contains { $0.contains(frameRate) } }
+}
+
+/// Réglage vidéo demandé par l'utilisateur.
+struct VideoRequest: Equatable {
+  let height: Int
+  let frameRate: Double
+  let range: VideoRange
+  let wantsProRes: Bool
+}
+
+extension CameraMath {
+  /// Format vidéo à activer, ou nil si le matériel ne sait pas le faire. Le
+  /// choix se fait sur `activeFormat` et jamais par `sessionPreset` : les deux
+  /// sont exclusifs, et un preset posé après coup reprend la main sur le
+  /// format (écran noir en 4K120, c'est le piège classique).
+  static func pickVideoFormat(_ formats: [VideoFormatSpec], request: VideoRequest) -> Int? {
+    var best: (index: Int, score: Double)?
+
+    for (index, format) in formats.enumerated() {
+      guard format.height == request.height,
+            format.supports(frameRate: request.frameRate)
+      else { continue }
+
+      if request.wantsProRes != format.isProResSource { continue }
+      if request.range == .log && !format.supportsAppleLog { continue }
+      if request.range == .hdr && !(format.isTenBit && format.supportsHlg) { continue }
+
+      // À égalité de résolution et de cadence, on préfère le format dont la
+      // cadence maximale est la plus proche du besoin : prendre un format 240
+      // images/s pour filmer à 30 dégrade l'image sans rien apporter.
+      var score = 1000.0 - (format.maxFrameRate - request.frameRate)
+      if format.isBinned { score -= 50 }
+      // Les formats 10 bits sont en HDR permanent : pour une demande SDR on
+      // ne les prend qu'à défaut d'autre chose.
+      if request.range == .sdr && format.isTenBit { score -= 30 }
+      // Un format qui laisse prendre de grandes photos pendant la vidéo est
+      // préférable, mais ça pèse moins que la qualité vidéo elle-même.
+      score += min(Double(format.maxPhotoWidth) / 1000.0, 10)
+
+      if best == nil || score > best!.score {
+        best = (index, score)
+      }
+    }
+
+    return best?.index
+  }
+
+  /// Cadences réellement proposables pour une hauteur donnée, dans l'ordre.
+  static func availableFrameRates(
+    _ formats: [VideoFormatSpec],
+    height: Int,
+    candidates: [Double] = [24, 25, 30, 60, 120, 240]
+  ) -> [Double] {
+    candidates.filter { rate in
+      formats.contains { $0.height == height && $0.supports(frameRate: rate) }
+    }
+  }
+
+  /// Hauteurs proposables, de la plus grande à la plus petite.
+  static func availableHeights(
+    _ formats: [VideoFormatSpec],
+    candidates: [Int] = [2160, 1080, 720]
+  ) -> [Int] {
+    candidates.filter { height in formats.contains { $0.height == height } }
+  }
+
+  /// Marge disque exigée avant de lancer un enregistrement, en octets. ProRes
+  /// écrit environ 6 Go par minute en 4K : accepter de démarrer avec 200 Mo
+  /// libres, c'est promettre un fichier qui sera coupé au bout de deux
+  /// secondes.
+  static func requiredFreeBytes(forProRes proRes: Bool) -> Int64 {
+    proRes ? 6_000_000_000 : 500_000_000
+  }
 }

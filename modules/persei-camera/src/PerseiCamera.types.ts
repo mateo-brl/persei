@@ -25,6 +25,8 @@ export interface CameraCapabilities {
   supportsRaw: boolean;
   supportsProRaw: boolean;
   maxMegapixels: number;
+  /** Définitions photo offertes par le matériel, en mégapixels (12, 24, 48…). */
+  photoResolutions: number[];
   zoomPresets: ZoomPreset[];
   hasFrontCamera: boolean;
   minZoom: number;
@@ -57,6 +59,56 @@ export interface LongExposureProgress {
   total: number;
 }
 
+/** Étendue dynamique : Rec.709, HLG 10 bits (Dolby Vision) ou Apple Log. */
+export type VideoRange = 'sdr' | 'hdr' | 'log';
+
+export type VideoCodec = 'hevc' | 'h264' | 'prores';
+
+export type VideoStabilization =
+  | 'off'
+  | 'auto'
+  | 'standard'
+  | 'cinematic'
+  | 'cinematicExtended';
+
+export interface VideoSettings {
+  /** Hauteur de l'image : 2160 (4K), 1080, 720. */
+  height: number;
+  frameRate: number;
+  range: VideoRange;
+  codec: VideoCodec;
+  stabilization: VideoStabilization;
+  audioEnabled: boolean;
+}
+
+export interface VideoCapabilities {
+  /** Hauteurs disponibles, de la plus grande à la plus petite. */
+  heights: number[];
+  /** Cadences disponibles par hauteur (clé = hauteur en texte). */
+  frameRates: Record<string, number[]>;
+  supportsHdr: boolean;
+  supportsLog: boolean;
+  supportsProRes: boolean;
+  stabilizations: VideoStabilization[];
+  /** Pause en cours d'enregistrement (iOS 18+). */
+  supportsPause: boolean;
+  hasMicrophone: boolean;
+  isRecording: boolean;
+}
+
+export interface RecordingProgress {
+  seconds: number;
+  bytes: number;
+  paused: boolean;
+}
+
+/** Arrêt non demandé : surchauffe, interruption, disque plein. */
+export interface RecordingStopped {
+  uri: string;
+  reason: string;
+  error?: string;
+}
+
 export type PerseiCameraEvents = {
   onExposureUpdate(update: ExposureUpdate): void;
   onLongExposureProgress(progress: LongExposureProgress): void;
@@ -64,4 +116,10 @@ export type PerseiCameraEvents = {
   onHistogram(payload: { bins: number[] }): void;
   /** Pression du bouton volume ou Camera Control. */
   onShutterButton(): void;
+  /** Durée et poids du fichier pendant un enregistrement (2 Hz). */
+  onRecordingProgress(progress: RecordingProgress): void;
+  /** L'enregistrement s'est arrêté sans que l'app le demande. */
+  onRecordingStopped(payload: RecordingStopped): void;
+  /** Le téléphone chauffe : « serious » avertit, « critical » a coupé. */
+  onSystemPressure(payload: { level: string }): void;
 };

@@ -22,6 +22,7 @@ const proCaps: CameraCapabilities = {
   supportsRaw: true,
   supportsProRaw: true,
   maxMegapixels: 48,
+  photoResolutions: [12, 24, 48],
   zoomPresets: [],
   hasFrontCamera: true,
   minZoom: 1,

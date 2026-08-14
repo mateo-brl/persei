@@ -16,7 +16,13 @@ import {
   PerseiCamera,
   PerseiCameraView,
   QualityPrioritization,
+  RecordingProgress,
   StackMode,
+  VideoCapabilities,
+  VideoCodec,
+  VideoRange,
+  VideoSettings,
+  VideoStabilization,
   ZoomPreset,
 } from '../../modules/persei-camera';
 import { Histogram } from '../components/histogram';
@@ -24,6 +30,8 @@ import { LevelIndicator } from '../components/level-indicator';
 import { RulerSlider } from '../components/ruler-slider';
 import {
   describeCapture,
+  formatBytes,
+  formatDuration,
   formatError,
   formatFocus,
   formatShutter,
@@ -42,6 +50,13 @@ import {
   TORCH_STOPS,
   WB_STOPS,
 } from '../lib/scales';
+import {
+  clampVideoSettings,
+  DEFAULT_VIDEO,
+  describeVideoMode,
+  explainStop,
+  frameRatesFor,
+} from '../lib/video';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
 
 const ACCENT = '#ffb800';
@@ -52,12 +67,18 @@ const POSE_DURATION_LABELS = ['10 s', '30 s', '1 min', '5 min', '15 min', '30 mi
 
 type ParamKey = 'iso' | 'shutter' | 'ev' | 'focus' | 'wb' | 'tint';
 
+type CaptureMode = 'photo' | 'pose' | 'video';
+
 export default function CameraScreen() {
   const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [caps, setCaps] = useState<CameraCapabilities | null>(null);
   const [front, setFront] = useState(false);
   const [raw, setRaw] = useState(false);
-  const [captureMode, setCaptureMode] = useState<'photo' | 'pose'>('photo');
+  const [captureMode, setCaptureMode] = useState<CaptureMode>('photo');
+  const [videoCaps, setVideoCaps] = useState<VideoCapabilities | null>(null);
+  const [videoSettings, setVideoSettings] = useState<VideoSettings>(DEFAULT_VIDEO);
+  const [recording, setRecording] = useState(false);
+  const [recPaused, setRecPaused] = useState(false);
   const [poseDuration, setPoseDuration] = useState(30);
   const [poseStyle, setPoseStyle] = useState<StackMode>('both');
   const [posing, setPosing] = useState(false);
@@ -83,7 +104,8 @@ export default function CameraScreen() {
   const [torch, setTorch] = useState(0);
   const [livePhoto, setLivePhoto] = useState(false);
   const [depth, setDepth] = useState(false);
-  const [highRes, setHighRes] = useState(true);
+  // Définition photo en mégapixels ; 0 = la plus grande que le format offre.
+  const [photoMp, setPhotoMp] = useState(0);
   const [quality, setQuality] = useState<QualityPrioritization>('quality');
   const [bracketEv, setBracketEv] = useState(0);
   const [timerSecs, setTimerSecs] = useState(0);
@@ -204,7 +226,7 @@ export default function CameraScreen() {
     }
     PerseiCamera.setFlashMode(flash).catch(() => {});
     PerseiCamera.setQualityPrioritization(quality).catch(() => {});
-    PerseiCamera.setHighResolution(highRes).catch(() => {});
+    PerseiCamera.setPhotoResolution(photoMp).catch(() => {});
     PerseiCamera.setLivePhotoEnabled(livePhoto).catch(() => {});
     PerseiCamera.setDepthEnabled(depth).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -487,6 +509,124 @@ export default function CameraScreen() {
     }
   }, []);
 
+  // MARK: vidéo
+
+  const videoSettingsRef = useRef(videoSettings);
+  useEffect(() => {
+    videoSettingsRef.current = videoSettings;
+  }, [videoSettings]);
+
+  // Entrer en vidéo reconfigure la session (format explicite, micro, sortie
+  // fichier). On n'y touche que sur demande, et on en ressort en quittant.
+  useEffect(() => {
+    if (!caps) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        if (captureMode === 'video') {
+          await PerseiCamera.requestMicrophonePermission();
+          const capabilities = await PerseiCamera.setVideoMode(true);
+          if (cancelled) return;
+          setVideoCaps(capabilities);
+          const settings = clampVideoSettings(videoSettingsRef.current, capabilities);
+          setVideoSettings(settings);
+          await PerseiCamera.configureVideo(settings);
+        } else {
+          await PerseiCamera.setVideoMode(false);
+          if (!cancelled) setVideoCaps(null);
+        }
+      } catch (e) {
+        if (!cancelled) setToast(`Vidéo : ${formatError(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [captureMode, caps]);
+
+  const updateVideoSettings = useCallback(
+    (patch: Partial<VideoSettings>) => {
+      const next = clampVideoSettings({ ...videoSettingsRef.current, ...patch }, videoCaps);
+      setVideoSettings(next);
+      PerseiCamera.configureVideo(next).catch((e) => setToast(`Vidéo : ${formatError(e)}`));
+    },
+    [videoCaps]
+  );
+
+  const saveRecording = useCallback(async (uri: string) => {
+    try {
+      const media = await MediaLibrary.requestPermissionsAsync();
+      if (!media.granted) {
+        setToast('Accès photothèque refusé, la vidéo reste dans l’app');
+        return;
+      }
+      await MediaLibrary.createAssetAsync(uri);
+      setLastUris([uri]);
+    } catch (e) {
+      setToast(`Sauvegarde vidéo : ${formatError(e)}`);
+    }
+  }, []);
+
+  const beginRecording = useCallback(async () => {
+    activateKeepAwakeAsync('video').catch(() => {});
+    try {
+      await PerseiCamera.startRecording();
+      setRecording(true);
+      setRecPaused(false);
+    } catch (e) {
+      deactivateKeepAwake('video').catch(() => {});
+      setToast(`Vidéo : ${formatError(e)}`);
+    }
+  }, []);
+
+  const endRecording = useCallback(async () => {
+    try {
+      const uri = await PerseiCamera.stopRecording();
+      setRecording(false);
+      setRecPaused(false);
+      await saveRecording(uri);
+      setToast('Vidéo enregistrée ✓');
+    } catch (e) {
+      setRecording(false);
+      setRecPaused(false);
+      setToast(`Vidéo : ${formatError(e)}`);
+    } finally {
+      deactivateKeepAwake('video').catch(() => {});
+    }
+  }, [saveRecording]);
+
+  // Arrêt subi (surchauffe, appel entrant, disque plein) : le natif ferme le
+  // fichier proprement, il reste à le sauver et à le dire.
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onRecordingStopped', (payload) => {
+      setRecording(false);
+      setRecPaused(false);
+      deactivateKeepAwake('video').catch(() => {});
+      setToast(explainStop(payload.reason));
+      if (payload.uri) saveRecording(payload.uri);
+    });
+    return () => sub.remove();
+  }, [saveRecording]);
+
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onSystemPressure', (payload) => {
+      if (payload.level === 'serious') {
+        setToast('Le téléphone chauffe. Baisse la résolution ou la cadence si ça continue.');
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const toggleRecordingPause = useCallback(() => {
+    if (recPaused) {
+      PerseiCamera.resumeRecording().catch(() => {});
+      setRecPaused(false);
+    } else {
+      PerseiCamera.pauseRecording().catch(() => {});
+      setRecPaused(true);
+    }
+  }, [recPaused]);
+
   const capture = useCallback(() => {
     if (timerSecs === 0) {
       shoot();
@@ -506,6 +646,14 @@ export default function CameraScreen() {
 
   const triggerShutter = useCallback(() => {
     if (capturing || countdown > 0 || !caps) return;
+    if (captureMode === 'video') {
+      if (recording) {
+        endRecording();
+      } else {
+        beginRecording();
+      }
+      return;
+    }
     if (captureMode === 'pose' && !front) {
       if (posing) {
         PerseiCamera.cancelLongExposure().catch(() => {});
@@ -536,6 +684,9 @@ export default function CameraScreen() {
     exposureAuto,
     timerSecs,
     captureNightShot,
+    recording,
+    beginRecording,
+    endRecording,
   ]);
 
   // Boutons volume / Camera Control = déclencheur physique. L'abonnement natif
@@ -725,16 +876,19 @@ export default function CameraScreen() {
                   />
                 </SettingRow>
               ) : null}
-              {caps && caps.maxMegapixels > 20 ? (
-                <SettingRow label="Résolution" helpKey="resolution">
+              {caps && caps.photoResolutions.length > 1 ? (
+                <SettingRow label="Définition" helpKey="resolution">
                   <Segmented
-                    options={['12', '48']}
-                    labels={['12 MP', `${Math.round(caps.maxMegapixels)} MP`]}
-                    value={highRes ? '48' : '12'}
+                    options={caps.photoResolutions.map(String)}
+                    labels={caps.photoResolutions.map((mp) => `${Math.round(mp)} MP`)}
+                    value={String(
+                      photoMp > 0
+                        ? photoMp
+                        : caps.photoResolutions[caps.photoResolutions.length - 1]
+                    )}
                     onChange={(v) => {
-                      const enabled = v === '48';
-                      setHighRes(enabled);
-                      PerseiCamera.setHighResolution(enabled).catch(() => {});
+                      setPhotoMp(Number(v));
+                      PerseiCamera.setPhotoResolution(Number(v)).catch(() => {});
                     }}
                   />
                 </SettingRow>
@@ -880,12 +1034,22 @@ export default function CameraScreen() {
 
           {posing ? <PoseBanner progress={poseProgress} /> : null}
 
-          {!front && !posing ? (
+          {recording ? <RecordingBanner paused={recPaused} /> : null}
+
+          {captureMode === 'video' && !recording ? (
+            <VideoBar
+              settings={videoSettings}
+              caps={videoCaps}
+              onChange={updateVideoSettings}
+            />
+          ) : null}
+
+          {!posing && !recording ? (
             <Segmented
-              options={['photo', 'pose']}
-              labels={['PHOTO', 'POSE LONGUE']}
+              options={front ? ['photo', 'video'] : ['photo', 'pose', 'video']}
+              labels={front ? ['PHOTO', 'VIDÉO'] : ['PHOTO', 'POSE', 'VIDÉO']}
               value={captureMode}
-              onChange={(v) => setCaptureMode(v as 'photo' | 'pose')}
+              onChange={(v) => setCaptureMode(v as CaptureMode)}
             />
           ) : null}
 
@@ -954,16 +1118,32 @@ export default function CameraScreen() {
               onPress={triggerShutter}
               disabled={capturing || countdown > 0 || !caps}
             >
-              {posing ? (
+              {posing || recording ? (
                 <View style={styles.stopSquare} />
               ) : capturing ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <View style={styles.shutterInner} />
+                <View style={[styles.shutterInner, captureMode === 'video' && styles.shutterVideo]} />
               )}
             </Pressable>
-            {hasFront ? (
-              <Pressable style={styles.flipButton} onPress={() => setFront(!front)}>
+            {recording && videoCaps?.supportsPause ? (
+              <Pressable style={styles.flipButton} onPress={toggleRecordingPause}>
+                <SymbolView
+                  name={recPaused ? 'play.fill' : 'pause.fill'}
+                  size={19}
+                  tintColor="#e8e8e8"
+                />
+              </Pressable>
+            ) : hasFront && !recording ? (
+              <Pressable
+                style={styles.flipButton}
+                onPress={() => {
+                  // La pose longue n'existe pas sur la frontale : on ne laisse
+                  // pas un mode actif qui n'a plus d'interface.
+                  if (!front && captureMode === 'pose') setCaptureMode('photo');
+                  setFront(!front);
+                }}
+              >
                 <SymbolView
                   name="arrow.triangle.2.circlepath.camera"
                   size={19}
@@ -1063,6 +1243,116 @@ function ZoomPresetPills({ presets }: { presets: ZoomPreset[] }) {
       {!onPreset ? (
         <Text style={styles.zoomText}>{formatZoomFactor(displayZoom(presets, zoom))}</Text>
       ) : null}
+    </View>
+  );
+}
+
+/** Réglages vidéo. Rien n'est proposé que le matériel ne sache faire. */
+function VideoBar({
+  settings,
+  caps,
+  onChange,
+}: {
+  settings: VideoSettings;
+  caps: VideoCapabilities | null;
+  onChange(patch: Partial<VideoSettings>): void;
+}) {
+  const heights = caps?.heights ?? [settings.height];
+  const rates = frameRatesFor(caps, settings.height);
+
+  const ranges: VideoRange[] = ['sdr'];
+  if (caps?.supportsHdr) ranges.push('hdr');
+  if (caps?.supportsLog) ranges.push('log');
+  const rangeLabels: Record<VideoRange, string> = { sdr: 'Standard', hdr: 'HDR', log: 'Log' };
+
+  const stabilizations = (caps?.stabilizations ?? ['auto', 'off']).filter((s) =>
+    ['auto', 'off', 'standard', 'cinematicExtended'].includes(s)
+  );
+  const stabilizationLabels: Record<string, string> = {
+    auto: 'Auto',
+    off: 'Off',
+    standard: 'Standard',
+    cinematicExtended: 'Max',
+  };
+
+  return (
+    <View style={styles.poseBar}>
+      <Text style={styles.videoSummary}>{describeVideoMode(settings)}</Text>
+
+      <Segmented
+        options={heights.map(String)}
+        labels={heights.map((h) => (h >= 2160 ? '4K' : `${h}p`))}
+        value={String(settings.height)}
+        onChange={(v) => onChange({ height: Number(v) })}
+      />
+
+      {rates.length > 1 ? (
+        <Segmented
+          options={rates.map(String)}
+          labels={rates.map((r) => `${r} i/s`)}
+          value={String(settings.frameRate)}
+          onChange={(v) => onChange({ frameRate: Number(v) })}
+        />
+      ) : null}
+
+      {ranges.length > 1 ? (
+        <SettingRow label="Rendu" helpKey="videoRange">
+          <Segmented
+            options={ranges}
+            labels={ranges.map((r) => rangeLabels[r])}
+            value={settings.range}
+            onChange={(v) => onChange({ range: v as VideoRange })}
+          />
+        </SettingRow>
+      ) : null}
+
+      {caps?.supportsProRes ? (
+        <SettingRow label="Codec" helpKey="videoCodec">
+          <Segmented
+            options={['hevc', 'prores']}
+            labels={['HEVC', 'ProRes']}
+            value={settings.codec === 'prores' ? 'prores' : 'hevc'}
+            onChange={(v) => onChange({ codec: v as VideoCodec })}
+          />
+        </SettingRow>
+      ) : null}
+
+      <SettingRow label="Stabilisation" helpKey="stabilization">
+        <Segmented
+          options={stabilizations}
+          labels={stabilizations.map((s) => stabilizationLabels[s] ?? s)}
+          value={settings.stabilization}
+          onChange={(v) => onChange({ stabilization: v as VideoStabilization })}
+        />
+      </SettingRow>
+
+      <SettingRow label="Son" helpKey="videoAudio">
+        <Segmented
+          options={['on', 'off']}
+          labels={['Avec le son', 'Muet']}
+          value={settings.audioEnabled ? 'on' : 'off'}
+          onChange={(v) => onChange({ audioEnabled: v === 'on' })}
+        />
+      </SettingRow>
+    </View>
+  );
+}
+
+/** Compteur d'enregistrement, abonné seul à la progression (2 Hz). */
+function RecordingBanner({ paused }: { paused: boolean }) {
+  const [progress, setProgress] = useState<RecordingProgress | null>(null);
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onRecordingProgress', setProgress);
+    return () => sub.remove();
+  }, []);
+
+  return (
+    <View style={styles.recBanner}>
+      <View style={[styles.recDot, paused && styles.recDotPaused]} />
+      <Text style={styles.recText}>
+        {paused ? 'PAUSE' : 'REC'} {formatDuration(progress?.seconds ?? 0)}
+      </Text>
+      <Text style={styles.recSize}>{formatBytes(progress?.bytes ?? 0)}</Text>
     </View>
   );
 }
@@ -1595,6 +1885,46 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: 'rgba(170, 15, 0, 0.4)',
+  },
+  videoSummary: {
+    color: ACCENT,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 0.4,
+  },
+  recBanner: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  recDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ff453a',
+  },
+  recDotPaused: {
+    backgroundColor: '#9b9b9b',
+  },
+  recText: {
+    color: '#e8e8e8',
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  recSize: {
+    color: '#9b9b9b',
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  shutterVideo: {
+    backgroundColor: '#ff453a',
   },
   stopSquare: {
     width: 30,
