@@ -122,8 +122,8 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.setLoupeEnabled(enabled)
     }
 
-    AsyncFunction("startLongExposure") { (seconds: Double, iso: Double, mode: String, align: Bool, meteorFilter: Bool, promise: Promise) in
-      CameraEngine.shared.startLongExposure(seconds: seconds, iso: iso, mode: mode, align: align, meteorFilter: meteorFilter) { result in
+    AsyncFunction("startLongExposure") { (seconds: Double, iso: Double, mode: String, align: Bool, meteorFilter: Bool, manualExposure: Bool, promise: Promise) in
+      CameraEngine.shared.startLongExposure(seconds: seconds, iso: iso, mode: mode, align: align, meteorFilter: meteorFilter, manualExposure: manualExposure) { result in
         switch result {
         case .success(let uris):
           promise.resolve(uris)

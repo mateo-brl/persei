@@ -43,16 +43,19 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   /** Loupe de mise au point (recadrage central grossi, calque natif). */
   setLoupeEnabled(enabled: boolean): Promise<void>;
   /**
-   * Pose longue par empilement (durée libre, pas de plafond) : trames de ~1 s
-   * fusionnées en moyenne et/ou en max. `align` recale les trames (main levée),
-   * `meteorFilter` ne fusionne en max que les trames contenant un transitoire.
+   * Pose longue par empilement (durée libre, pas de plafond). `manualExposure`
+   * true (nuit) : trames de ~1 s à l'ISO donné sur la caméra physique ;
+   * false (jour) : trames auto courtes empilées (rendu pose longue correct en
+   * pleine lumière). `align` recale les trames (main levée), `meteorFilter`
+   * ne fusionne en max que les trames contenant un transitoire.
    */
   startLongExposure(
     seconds: number,
     iso: number,
     mode: StackMode,
     align: boolean,
-    meteorFilter: boolean
+    meteorFilter: boolean,
+    manualExposure: boolean
   ): Promise<string[]>;
   cancelLongExposure(): Promise<void>;
 }
