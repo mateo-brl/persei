@@ -26,8 +26,14 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm install -g eas-cli@latest
+      # Sans le Team ID, eas-cli demande à l'écran de quelle équipe Apple il
+      # s'agit et s'arrête net en mode non interactif : c'est ce qui bloque la
+      # création du profil de la cible d'extension.
       - name: Compiler l'IPA sur le runner
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        env:
+          EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}'
+          EXPO_APPLE_TEAM_ID: M9GRJSY2QN
+          EXPO_APPLE_TEAM_TYPE: INDIVIDUAL
         run: |
           eas build --platform ios --profile production \
             --local --non-interactive \
@@ -36,7 +42,10 @@ jobs:
         # Sur un push de tag, inputs est vide et '' == false pour GitHub :
         # il faut autoriser explicitement le cas tag.
         if: ${{ github.event_name == 'push' || inputs.submit }}
-        env: { EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}' }
+        env:
+          EXPO_TOKEN: '${{ secrets.EXPO_TOKEN }}'
+          EXPO_APPLE_TEAM_ID: M9GRJSY2QN
+          EXPO_APPLE_TEAM_TYPE: INDIVIDUAL
         run: |
           eas submit --platform ios --profile production \
             --path "${{ runner.temp }}/app.ipa" --non-interactive
