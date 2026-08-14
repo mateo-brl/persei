@@ -270,10 +270,12 @@ extension CameraEngine {
     // Le format vidéo change les tailles de photo disponibles : sans cette
     // remise à jour, prendre une photo pendant la vidéo lève une exception.
     applyResolutionPreference(for: device)
-    session.commitConfiguration()
-
+    // Activer le cinématique reconfigure tout le pipeline : Apple demande que
+    // ça se fasse dans le même bloc de configuration, sinon la préview gèle.
     applyCinematicLocked()
     applyAudioOptionsLocked()
+    session.commitConfiguration()
+
     applyStabilizationLocked()
     applyCodecLocked()
     applyRotationLocked()
