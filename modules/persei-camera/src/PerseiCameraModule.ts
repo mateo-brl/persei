@@ -69,6 +69,12 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
    */
   consumeLaunchMode(): Promise<string | null>;
   /**
+   * Trace du dernier plantage (nom de l'exception, raison, haut de pile), lue
+   * une seule fois. Une exception levée sur une file d'arrière-plan tue l'app
+   * sans rien afficher : c'est le seul moyen de savoir ce qui s'est passé.
+   */
+  consumeLastCrash(): Promise<string | null>;
+  /**
    * Bascule la session en vidéo (ou revient en photo) et renvoie ce que le
    * matériel sait faire. En vidéo, le format est choisi explicitement : les
    * presets de session et le choix de format s'excluent.

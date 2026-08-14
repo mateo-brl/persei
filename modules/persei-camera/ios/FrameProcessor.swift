@@ -21,6 +21,8 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
   private let ciContext = CIContext(options: [.cacheIntermediates: false])
   private var frameIndex = 0
   private var lastHistogram = Date.distantPast
+  private var lastOverlay = Date.distantPast
+  private var lastLoupe = Date.distantPast
   private var overlayWasActive = false
   private var loupeWasActive = false
 
@@ -32,6 +34,13 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     frameIndex += 1
     guard frameIndex % 3 == 0 else { return }
 
+    // Chaque image intermédiaire retient le buffer de la caméra : sans pool
+    // explicite, le pic mémoire d'une trame n'est rendu qu'au bon vouloir de
+    // la file, et à 60 images par seconde ça compte.
+    autoreleasepool { process(sampleBuffer) }
+  }
+
+  private func process(_ sampleBuffer: CMSampleBuffer) {
     let overlayActive = peakingEnabled || zebrasEnabled
     if !overlayActive, overlayWasActive {
       overlayWasActive = false
@@ -54,14 +63,19 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
       emitHistogram(of: smallImage)
     }
 
-    if overlayActive {
+    // Les calques partent vers le thread principal, déjà chargé : sans limite
+    // de cadence, les images s'y empilent plus vite qu'il ne les affiche.
+    let maintenant = Date()
+    if overlayActive, maintenant.timeIntervalSince(lastOverlay) > 0.1 {
+      lastOverlay = maintenant
       overlayWasActive = true
       emitOverlay(of: smallImage)
     }
 
-    if loupeEnabled {
+    if loupeEnabled, maintenant.timeIntervalSince(lastLoupe) > 0.1 {
+      lastLoupe = maintenant
       loupeWasActive = true
-      emitLoupe(of: fullImage)
+      emitLoupe(of: smallImage)
     }
   }
 
@@ -133,7 +147,8 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
   }
 
   private func emitLoupe(of image: CIImage) {
-    // Recadrage central (1/8 de la largeur) = grossissement ~8x à l'écran.
+    // Recadrage central (1/8 de la largeur) sur l'image réduite : travailler
+    // sur la pleine résolution retenait le buffer caméra une trame de plus.
     let extent = image.extent
     let cropSize = extent.width / 8
     let crop = CGRect(

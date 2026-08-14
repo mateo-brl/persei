@@ -42,8 +42,14 @@ final class CameraEngine: NSObject {
   var pendingStartCompletion: ((Result<Void, Error>) -> Void)?
   /// Cause d'un arrêt subi (surchauffe, interruption, disque plein).
   var stopReason: String?
-  var onRecordingProgress: (([String: Any]) -> Void)?
-  var onRecordingStopped: (([String: Any]) -> Void)?
+  var onRecordingProgress: (([String: Any]) -> Void)? {
+    get { lues { _onRecordingProgress } }
+    set { callbackLock.lock(); _onRecordingProgress = newValue; callbackLock.unlock() }
+  }
+  var onRecordingStopped: (([String: Any]) -> Void)? {
+    get { lues { _onRecordingStopped } }
+    set { callbackLock.lock(); _onRecordingStopped = newValue; callbackLock.unlock() }
+  }
   /// Une propriété stockée ne peut pas porter d'annotation de disponibilité :
   /// le coordinateur de rotation d'iOS 17 est donc gardé sans type.
   private var rotationCoordinatorStorage: Any?
@@ -65,12 +71,43 @@ final class CameraEngine: NSObject {
   private var lastCodeValue: String?
   private var lastCodeDate = Date.distantPast
   /// Code détecté : { value, type }.
-  var onCodeDetected: (([String: Any]) -> Void)?
+  var onCodeDetected: (([String: Any]) -> Void)? {
+    get { lues { _onCodeDetected } }
+    set { callbackLock.lock(); _onCodeDetected = newValue; callbackLock.unlock() }
+  }
   weak var assistView: PerseiCameraView?
+
+  // Les rappels vers JS sont posés depuis la file du module Expo et lus
+  // depuis les files KVO, de traitement et de session. Lire une closure
+  // pendant qu'une autre file la réécrit fait manipuler à ARC un contexte à
+  // moitié publié : le processus meurt sur-le-champ, sans rien afficher.
+  // D'où ce verrou, seul endroit du moteur où plusieurs files se croisent.
+  private let callbackLock = NSLock()
+  private var _onHistogram: (([Double]) -> Void)?
+  private var _onCaptureButton: (() -> Void)?
+  private var _onExposureUpdate: (([String: Any]) -> Void)?
+  private var _onLongExposureProgress: (([String: Any]) -> Void)?
+  private var _onRecordingProgress: (([String: Any]) -> Void)?
+  private var _onRecordingStopped: (([String: Any]) -> Void)?
+  private var _onSystemPressure: (([String: Any]) -> Void)?
+  private var _onCodeDetected: (([String: Any]) -> Void)?
+
+  private func lues<T>(_ lecture: () -> T) -> T {
+    callbackLock.lock()
+    defer { callbackLock.unlock() }
+    return lecture()
+  }
+
   /// Histogramme 64 bins vers JS (~5 Hz quand activé).
-  var onHistogram: (([Double]) -> Void)?
+  var onHistogram: (([Double]) -> Void)? {
+    get { lues { _onHistogram } }
+    set { callbackLock.lock(); _onHistogram = newValue; callbackLock.unlock() }
+  }
   /// Pression du bouton volume / Camera Control.
-  var onCaptureButton: (() -> Void)?
+  var onCaptureButton: (() -> Void)? {
+    get { lues { _onCaptureButton } }
+    set { callbackLock.lock(); _onCaptureButton = newValue; callbackLock.unlock() }
+  }
 
   override init() {
     super.init()
@@ -83,6 +120,7 @@ final class CameraEngine: NSObject {
     processor.onHistogram = { [weak self] bins in
       self?.onHistogram?(bins)
     }
+    CrashLog.install()
     // Appel entrant, passage en arrière-plan, caméra prise par une autre app :
     // un enregistrement en cours est fermé proprement plutôt que perdu.
     NotificationCenter.default.addObserver(
@@ -91,6 +129,24 @@ final class CameraEngine: NSObject {
       queue: nil
     ) { [weak self] _ in
       self?.stopRecordingBecause("interruption")
+    }
+    // Une erreur de session (coût matériel dépassé, services média
+    // réinitialisés) coupait le flux en silence : on la note et on la dit.
+    NotificationCenter.default.addObserver(
+      forName: AVCaptureSession.runtimeErrorNotification,
+      object: session,
+      queue: nil
+    ) { [weak self] note in
+      guard let self else { return }
+      let erreur = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
+      let texte = "P12: session runtime error (\(erreur?.localizedDescription ?? "inconnue"))"
+      CrashLog.record(texte)
+      self.stopRecordingBecause("erreur")
+      self.onSystemPressure?(["level": "sessionError", "message": texte])
+      // La session s'arrête d'elle-même sur ce type d'erreur : on la relance.
+      self.sessionQueue.async {
+        if !self.session.isRunning { self.session.startRunning() }
+      }
     }
   }
 
@@ -102,7 +158,10 @@ final class CameraEngine: NSObject {
   private var depthEnabled = false
 
   /// Live sensor readout pushed to JS (set by the module while observed).
-  var onExposureUpdate: (([String: Any]) -> Void)?
+  var onExposureUpdate: (([String: Any]) -> Void)? {
+    get { lues { _onExposureUpdate } }
+    set { callbackLock.lock(); _onExposureUpdate = newValue; callbackLock.unlock() }
+  }
   private var observations: [NSKeyValueObservation] = []
   private var lastEmit = Date.distantPast
 
@@ -147,6 +206,12 @@ final class CameraEngine: NSObject {
   private func configureSession(lens: String) throws -> [String: Any] {
     guard let newDevice = resolveDevice(lens: lens) else {
       throw CameraEngineError.deviceUnavailable
+    }
+    // Reconfigurer la session pendant un enregistrement fait lever une
+    // exception à la sortie film : on ferme le fichier d'abord.
+    if video.isRecording {
+      video.output.stopRecording()
+      video.isRecording = false
     }
 
     session.beginConfiguration()
@@ -205,8 +270,12 @@ final class CameraEngine: NSObject {
     }
 
     if !session.outputs.contains(videoDataOutput) {
+      // 4:2:0 8 bits plutôt que du BGRA : Core Image le lit nativement et la
+      // session convertit quatre fois moins de données par seconde, ce qui
+      // compte quand la sortie film tourne en même temps.
       videoDataOutput.videoSettings = [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferPixelFormatTypeKey as String:
+          kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
       ]
       videoDataOutput.alwaysDiscardsLateVideoFrames = true
       videoDataOutput.setSampleBufferDelegate(processor, queue: processingQueue)
@@ -365,20 +434,44 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// Surchauffe. Le système finit par couper la caméra de lui-même : plutôt
+  /// que d'attendre ce moment, on allège la session et on prévient. Jusqu'ici
+  /// le niveau critique était détecté, transmis, et n'affichait rien.
   private func handleSystemPressure(_ state: AVCaptureDevice.SystemPressureState) {
     switch state.level {
-    case .critical, .shutdown:
+    case .shutdown:
+      stopRecordingBecause("thermal")
+      onSystemPressure?(["level": "shutdown"])
+      sessionQueue.async { self.setAssistOutputEnabled(false) }
+    case .critical:
       stopRecordingBecause("thermal")
       onSystemPressure?(["level": "critical"])
+      sessionQueue.async {
+        self.setAssistOutputEnabled(false)
+        // Rendre la cadence au système : il la remontera en refroidissant.
+        guard #available(iOS 18.0, *), let device = self.device,
+              device.activeFormat.isAutoVideoFrameRateSupported,
+              !device.isAutoVideoFrameRateEnabled
+        else { return }
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          device.isAutoVideoFrameRateEnabled = true
+        } catch {}
+      }
     case .serious:
       onSystemPressure?(["level": "serious"])
+      sessionQueue.async { self.setAssistOutputEnabled(false) }
     default:
       break
     }
   }
 
   /// Avertissement thermique vers le JS.
-  var onSystemPressure: (([String: Any]) -> Void)?
+  var onSystemPressure: (([String: Any]) -> Void)? {
+    get { lues { _onSystemPressure } }
+    set { callbackLock.lock(); _onSystemPressure = newValue; callbackLock.unlock() }
+  }
 
   private func emitUpdate() {
     guard let device, let onExposureUpdate else { return }
@@ -478,7 +571,6 @@ final class CameraEngine: NSObject {
       session.addInput(input)
       videoInput = input
       device = newDevice
-      applyResolutionPreference(for: newDevice)
     } else if let previousInput, session.canAddInput(previousInput) {
       // Bascule refusée : on remet l'ancien input, jamais de session sans entrée.
       session.addInput(previousInput)
@@ -497,6 +589,10 @@ final class CameraEngine: NSObject {
     session.commitConfiguration()
 
     guard let device else { return }
+    // Après le commit seulement : avant, le format actif n'est pas encore
+    // celui que la session retient, et les dimensions posées peuvent ne plus
+    // lui appartenir (exception à la première photo).
+    applyResolutionPreference(for: device)
     startObserving(device)
     let clampedZoom = min(
       max(zoom, device.minAvailableVideoZoomFactor),
@@ -553,9 +649,9 @@ final class CameraEngine: NSObject {
   }
 
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
-    guard !cinematicActive else { return }
     guard iso.isFinite, shutterSeconds.isFinite else { return }
     sessionQueue.sync {
+      guard !self.cinematicActive else { return }
       // L'exposition .custom n'existe pas sur le device virtuel : bascule
       // sur la caméra physique équivalente d'abord.
       self.manualExposureActive = true
@@ -605,9 +701,9 @@ final class CameraEngine: NSObject {
   }
 
   func setLensPosition(_ position: Double) throws {
-    guard !cinematicActive else { return }
     guard position.isFinite else { return }
     sessionQueue.sync {
+      guard !self.cinematicActive else { return }
       // lensPosition non supporté sur le device virtuel : physique requis.
       self.manualFocusActive = true
       self.ensurePhysicalForManualLocked()
@@ -641,9 +737,9 @@ final class CameraEngine: NSObject {
   }
 
   func setWhiteBalance(kelvin: Double, tint: Double) throws {
-    guard !cinematicActive else { return }
     guard kelvin.isFinite, tint.isFinite else { return }
     sessionQueue.sync {
+      guard !self.cinematicActive else { return }
       // Les gains de BdB verrouillés ne sont pas supportés sur le device
       // virtuel : physique requis.
       self.manualWbActive = true
@@ -796,11 +892,20 @@ final class CameraEngine: NSObject {
 
   // MARK: - Aides de visée
 
+  /// Aides demandées par l'utilisateur, mémorisées côté session pour décider
+  /// si la sortie d'analyse a une raison de tourner.
+  private var assistOptionsOn = false
+  private var loupeOn = false
+
   func setAssistOptions(peaking: Bool, zebras: Bool, histogram: Bool) {
     processingQueue.async {
       self.processor.peakingEnabled = peaking
       self.processor.zebrasEnabled = zebras
       self.processor.histogramEnabled = histogram
+    }
+    sessionQueue.async {
+      self.assistOptionsOn = peaking || zebras || histogram
+      self.refreshAssistOutputLocked()
     }
   }
 
@@ -808,6 +913,20 @@ final class CameraEngine: NSObject {
     processingQueue.async {
       self.processor.loupeEnabled = enabled
     }
+    sessionQueue.async {
+      self.loupeOn = enabled
+      self.refreshAssistOutputLocked()
+    }
+  }
+
+  /// La sortie d'analyse ne tourne que si quelqu'un la regarde, et jamais dans
+  /// les modes vidéo lourds. Chaque sortie active consomme du budget matériel,
+  /// et une session qui dépasse ce budget lâche en pleine prise.
+  func refreshAssistOutputLocked() {
+    let utilisee = assistOptionsOn || loupeOn
+    let lourd = video.isActive
+      && (video.request.frameRate >= 60 || video.request.wantsProRes || video.request.height >= 2160)
+    setAssistOutputEnabled(utilisee && !lourd)
   }
 
   /// Types de codes lus dans la préview. Les types disponibles dépendent de la
@@ -877,7 +996,10 @@ final class CameraEngine: NSObject {
   // MARK: - Pose longue (empilement)
 
   /// Progression de la pose ({frame, total}), poussée vers JS.
-  var onLongExposureProgress: (([String: Any]) -> Void)?
+  var onLongExposureProgress: (([String: Any]) -> Void)? {
+    get { lues { _onLongExposureProgress } }
+    set { callbackLock.lock(); _onLongExposureProgress = newValue; callbackLock.unlock() }
+  }
   private var stackCancelled = false
   private var stackFramesDone = 0
   private var stackRunning = false

@@ -31,6 +31,9 @@ final class VideoState {
   var simulatedAperture: Double = 0
   var isActive = false
   var isRecording = false
+  /// Sortie du mode vidéo demandée pendant un enregistrement : reprise à la
+  /// fin de l'écriture.
+  var pendingLeave = false
   var delegate: MovieRecordingDelegate?
   var progressTimer: DispatchSourceTimer?
   /// Réglages photo restaurés en quittant la vidéo.
@@ -111,16 +114,24 @@ extension CameraEngine {
     // session le réécrit à chaque reconfiguration.
     session.automaticallyConfiguresCaptureDeviceForWideColor = false
     session.commitConfiguration()
+    // Ajouter la sortie film change la liste des types de codes lisibles. Ce
+    // filtrage doit se faire une fois la configuration validée : pendant, la
+    // liste disponible est encore celle d'avant.
+    restoreCodeScanningLocked()
 
     video.isActive = true
     applyVideoFormatLocked()
   }
 
   private func leaveVideoModeLocked() {
+    // Retirer la sortie film avant que le fichier soit finalisé le tronque :
+    // on arrête, on rend la main, et le démontage se refait à la fin.
     if video.isRecording {
+      video.pendingLeave = true
       video.output.stopRecording()
-      video.isRecording = false
+      return
     }
+    video.pendingLeave = false
     stopProgressTimerLocked()
 
     session.beginConfiguration()
@@ -138,13 +149,26 @@ extension CameraEngine {
         }
       } catch {}
     }
+    let zoomAvant = device?.videoZoomFactor
     session.sessionPreset = video.savedPhotoPreset ?? .photo
-    if let device { applyResolutionPreference(for: device) }
+    if let device {
+      applyResolutionPreference(for: device)
+      if let zoomAvant {
+        do {
+          try device.lockForConfiguration()
+          defer { device.unlockForConfiguration() }
+          device.videoZoomFactor = min(
+            max(zoomAvant, device.minAvailableVideoZoomFactor),
+            device.maxAvailableVideoZoomFactor
+          )
+        } catch {}
+      }
+    }
     reapplyPhotoOutputOptions()
     session.commitConfiguration()
 
-    setAssistOutputEnabled(true)
     video.isActive = false
+    refreshAssistOutputLocked()
     video.savedPhotoPreset = nil
   }
 
@@ -237,6 +261,10 @@ extension CameraEngine {
     else { return false }
     let format = device.formats[index]
 
+    // Poser un format remet le zoom à 1,0, c'est-à-dire l'ultra grand-angle sur
+    // un device virtuel : le cadrage sautait au 0,5× en entrant en vidéo.
+    let zoomAvant = device.videoZoomFactor
+
     session.beginConfiguration()
     do {
       try device.lockForConfiguration()
@@ -251,7 +279,12 @@ extension CameraEngine {
       }
       device.activeFormat = format
 
-      let duration = CMTime(value: 1, timescale: CMTimeScale(video.request.frameRate.rounded()))
+      // Timescale précis : 23,976 ou 29,97 arrondis à 24 ou 30 sortiraient
+      // des bornes du format et feraient lever une exception.
+      let duration = CMTime(
+        value: 1_000_000,
+        timescale: CMTimeScale((video.request.frameRate * 1_000_000).rounded())
+      )
       if format.videoSupportedFrameRateRanges.contains(where: {
         $0.minFrameRate <= video.request.frameRate && video.request.frameRate <= $0.maxFrameRate
       }) {
@@ -263,6 +296,11 @@ extension CameraEngine {
       if format.supportedColorSpaces.contains(wanted) {
         device.activeColorSpace = wanted
       }
+
+      device.videoZoomFactor = min(
+        max(zoomAvant, device.minAvailableVideoZoomFactor),
+        device.maxAvailableVideoZoomFactor
+      )
     } catch {
       session.commitConfiguration()
       return false
@@ -279,10 +317,7 @@ extension CameraEngine {
     applyStabilizationLocked()
     applyCodecLocked()
     applyRotationLocked()
-    // Les aides de visée tournent sur une sortie vidéo séparée : au-delà de
-    // 60 images/s ou en ProRes, le budget matériel est déjà pris.
-    let heavy = video.request.frameRate > 60 || video.request.wantsProRes
-    setAssistOutputEnabled(!heavy)
+    refreshAssistOutputLocked()
     return true
   }
 
@@ -341,7 +376,8 @@ extension CameraEngine {
       input.isCinematicVideoCaptureEnabled = voulu
     }
     guard voulu else {
-      restoreCodeScanningLocked()
+      // Retour aux codes QR après le commit, pas pendant.
+      sessionQueue.async { self.restoreCodeScanningLocked() }
       return
     }
 
@@ -560,7 +596,18 @@ extension CameraEngine {
         }
       }
       self.stopReason = nil
+      if self.video.pendingLeave {
+        self.video.pendingLeave = false
+        self.leaveVideoModeAfterRecording()
+      }
     }
+  }
+
+  /// Démontage différé : la sortie film n'est retirée qu'une fois le fichier
+  /// écrit.
+  private func leaveVideoModeAfterRecording() {
+    guard video.isActive else { return }
+    leaveVideoModeLocked()
   }
 
   /// Arrêt provoqué par le système : on sauve ce qui est déjà écrit.
