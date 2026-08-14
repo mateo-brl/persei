@@ -5,7 +5,15 @@ import { SymbolView } from 'expo-symbols';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -414,6 +422,37 @@ export default function CameraScreen() {
     },
     [isoStops, shutterStops, caps]
   );
+
+  /**
+   * Mode réclamé par un raccourci Siri ou le bouton Action. Le natif l'écrit
+   * avant que l'app s'ouvre, on le consomme une fois arrivé.
+   */
+  const applyLaunchMode = useCallback(
+    (mode: string | null) => {
+      if (!mode || mode === 'photo') return;
+      if (mode === 'video') {
+        setCaptureMode('video');
+        return;
+      }
+      const preset = SCENE_PRESETS.find((p) => p.id === mode);
+      if (preset) applyPreset(preset);
+    },
+    [applyPreset]
+  );
+
+  useEffect(() => {
+    if (!caps) return;
+    PerseiCamera.consumeLaunchMode().then(applyLaunchMode).catch(() => {});
+  }, [caps, applyLaunchMode]);
+
+  // App déjà lancée : le raccourci écrit le mode puis nous ramène au premier plan.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      PerseiCamera.consumeLaunchMode().then(applyLaunchMode).catch(() => {});
+    });
+    return () => sub.remove();
+  }, [applyLaunchMode]);
 
   const startPose = useCallback(async () => {
     setPosing(true);

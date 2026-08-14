@@ -62,7 +62,8 @@
         {
           "savePhotosPermission": "Persei enregistre vos photos dans votre photothèque."
         }
-      ]
+      ],
+      "./plugins/with-app-intents"
     ],
     "experiments": {
       "typedRoutes": true,
