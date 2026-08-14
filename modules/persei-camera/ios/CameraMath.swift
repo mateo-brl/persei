@@ -199,6 +199,81 @@ enum CameraMath {
   }
 }
 
+/// Ce qu'on demande réellement au capteur pour une photo.
+enum RawKind {
+  /// RAW Bayer : fichier deux fois plus léger que le ProRAW, mais interdit dès
+  /// que le zoom n'est pas exactement 1,0.
+  case bayer
+  /// Apple ProRAW : accepté à tous les zooms, fichiers très lourds.
+  case proRaw
+  /// Image développée par l'appareil (HEIC/HEVC).
+  case processed
+}
+
+extension CameraMath {
+  /// Format à demander pour une capture.
+  ///
+  /// AVFoundation refuse le RAW Bayer à un zoom autre que 1,0 — et le refuse
+  /// par une exception au déclenchement, qui tue l'app. C'est le plantage du
+  /// 14 août à 22 h 48 : une pose lancée au 2×. Le zoom est donc une condition
+  /// de choix du format, pas un détail d'affichage.
+  ///
+  /// `compact` vise l'empilement de pose : des dizaines d'images en mémoire,
+  /// où le ProRAW ne passe pas. Mieux vaut alors du développé que rien.
+  static func rawKind(
+    wantsRaw: Bool,
+    hasBayer: Bool,
+    hasProRaw: Bool,
+    zoom: Double,
+    compact: Bool
+  ) -> RawKind {
+    guard wantsRaw else { return .processed }
+    let zoomNeutre = abs(zoom - 1.0) < 0.001
+    if hasBayer, zoomNeutre { return .bayer }
+    if hasProRaw, !compact { return .proRaw }
+    return .processed
+  }
+
+  /// Durée d'une trame de pose déduite de la mesure automatique.
+  ///
+  /// La plus longue que le matériel accepte, mais jamais au point d'exiger un
+  /// ISO sous le minimum : en plein jour, une trame d'une seconde ne rendrait
+  /// que du blanc. La nuit, la limite ne joue pas et on obtient bien la
+  /// seconde entière.
+  static func poseFrameSeconds(
+    currentIso: Double,
+    currentSeconds: Double,
+    in limits: ExposureLimits
+  ) -> Double {
+    let plafond = poseFrameSeconds(in: limits)
+    guard currentIso.isFinite, currentIso > 0, currentSeconds > 0, limits.minIso > 0 else {
+      return plafond
+    }
+    let sansSurexposition = currentIso * currentSeconds / limits.minIso
+    return clampSeconds(min(plafond, sansSurexposition), in: limits)
+  }
+
+  /// ISO à poser quand on allonge la durée d'exposition.
+  ///
+  /// La lumière reçue double quand la durée double : l'ISO se divise d'autant.
+  /// Sans ce report, une pose qui passe de 1/15 s à 1 s en gardant l'ISO que
+  /// l'automatique affichait surexpose de presque quatre diaphragmes. Et à
+  /// l'inverse, garder la durée courte de l'automatique en pleine nuit donne
+  /// exactement ce qu'on reproche à l'app : des images noires et bruitées là
+  /// où le mode nuit de l'iPhone sort une photo lisible.
+  static func equivalentIso(
+    currentIso: Double,
+    currentSeconds: Double,
+    targetSeconds: Double,
+    in limits: ExposureLimits
+  ) -> Double {
+    guard currentIso.isFinite, currentSeconds > 0, targetSeconds > 0 else {
+      return clampIso(limits.maxIso, in: limits)
+    }
+    return clampIso(currentIso * currentSeconds / targetSeconds, in: limits)
+  }
+}
+
 /// Une définition photo en pixels. Doublure testable de `CMVideoDimensions`,
 /// que CameraMath n'importe pas pour rester compilable sans matériel.
 struct PhotoSize: Equatable {

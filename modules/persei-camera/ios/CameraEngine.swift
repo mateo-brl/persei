@@ -1099,40 +1099,70 @@ final class CameraEngine: NSObject {
       self.stackCancelled = false
       self.stackFramesDone = 0
 
-      if manualExposure {
-        // L'exposition .custom exige la caméra physique (le virtuel ne la
-        // supporte pas — trames auto ultra-courtes et photos noires sinon).
-        self.ensurePhysicalForManualLocked()
-        guard let poseDevice = self.device else {
-          self.stackRunning = false
-          completion(.failure(CameraEngineError.notRunning))
-          return
-        }
-        guard poseDevice.isExposureModeSupported(.custom) else {
-          self.stackRunning = false
-          completion(.failure(CameraEngineError.captureFailed("P33: custom exposure unsupported on this camera")))
-          return
-        }
-        let bounds = self.exposureBounds(of: poseDevice)
-        do {
-          try poseDevice.lockForConfiguration()
-          defer { poseDevice.unlockForConfiguration() }
-          poseDevice.setExposureModeCustom(
-            duration: CMTime(
-              seconds: CameraMath.poseFrameSeconds(in: bounds),
-              preferredTimescale: 1_000_000_000
-            ),
-            iso: CameraMath.clampIso(iso, in: bounds),
-            completionHandler: nil
+      // Une pose longue impose toujours l'exposition .custom, que l'utilisateur
+      // ait réglé quelque chose ou non. En automatique, le capteur reste sur
+      // des trames de 1/15 s à l'ISO maximal : empiler trente secondes de ça
+      // rend une image noire et bruitée, exactement ce que le mode nuit de
+      // l'iPhone évite. Une trame d'une seconde reçoit quinze fois plus de
+      // lumière, et c'est l'empilement qui fait le reste.
+      //
+      // L'exposition .custom exige la caméra physique : le device virtuel ne
+      // la supporte pas.
+      self.ensurePhysicalForManualLocked()
+      guard let poseDevice = self.device else {
+        self.stackRunning = false
+        completion(.failure(CameraEngineError.notRunning))
+        return
+      }
+      guard poseDevice.isExposureModeSupported(.custom) else {
+        self.stackRunning = false
+        completion(.failure(CameraEngineError.captureFailed("P33: custom exposure unsupported on this camera")))
+        return
+      }
+      let bounds = self.exposureBounds(of: poseDevice)
+      let isoMesure = Double(poseDevice.iso)
+      let secondesMesure = poseDevice.exposureDuration.seconds
+      // Réglage demandé s'il y en a un ; sinon on part de la mesure
+      // automatique et on l'allonge autant que la scène le permet.
+      let poseSeconds = manualExposure
+        ? CameraMath.poseFrameSeconds(in: bounds)
+        : CameraMath.poseFrameSeconds(
+            currentIso: isoMesure,
+            currentSeconds: secondesMesure,
+            in: bounds
           )
-        } catch {
-          self.stackRunning = false
-          completion(.failure(error))
-          return
-        }
+      let poseIso = manualExposure
+        ? CameraMath.clampIso(iso, in: bounds)
+        : CameraMath.equivalentIso(
+            currentIso: isoMesure,
+            currentSeconds: secondesMesure,
+            targetSeconds: poseSeconds,
+            in: bounds
+          )
+      do {
+        try poseDevice.lockForConfiguration()
+        defer { poseDevice.unlockForConfiguration() }
+        poseDevice.setExposureModeCustom(
+          duration: CMTime(seconds: poseSeconds, preferredTimescale: 1_000_000_000),
+          iso: poseIso,
+          completionHandler: nil
+        )
+      } catch {
+        self.stackRunning = false
+        completion(.failure(error))
+        return
       }
 
-      self.poseUsesRaw = manualExposure && !self.photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
+      // Le RAW Bayer est interdit hors du zoom 1,0, et le refus est une
+      // exception qui tue l'app : le zoom décide, pas l'envie de RAW.
+      self.poseUsesRaw = CameraMath.rawKind(
+        wantsRaw: true,
+        hasBayer: self.photoOutput.availableRawPhotoPixelFormatTypes
+          .contains { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) },
+        hasProRaw: self.photoOutput.isAppleProRAWSupported,
+        zoom: Double(poseDevice.videoZoomFactor),
+        compact: true
+      ) == .bayer
       self.poseStartDate = Date()
       let stacker = FrameStacker(mode: mode, align: align, meteorFilter: meteorFilter)
       self.captureStackFrame(totalSeconds: seconds, stacker: stacker, completion: completion)
@@ -1304,10 +1334,23 @@ final class CameraEngine: NSObject {
 
     let settings: AVCapturePhotoSettings
     let rawTypes = photoOutput.availableRawPhotoPixelFormatTypes
-    if raw, !rawTypes.isEmpty {
-      // Prefer ProRAW when the device offers it, otherwise Bayer RAW.
-      let proRawType = rawTypes.first { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }
-      let rawType = proRawType ?? rawTypes[0]
+    // ProRAW de préférence : il accepte tous les zooms. Le Bayer, lui, exige
+    // un zoom de 1,0 et lève une exception sinon — d'où ce choix piloté par le
+    // zoom et non par la seule disponibilité.
+    let choix = CameraMath.rawKind(
+      wantsRaw: raw,
+      hasBayer: rawTypes.contains { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) },
+      hasProRaw: photoOutput.isAppleProRAWSupported
+        && rawTypes.contains { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) },
+      zoom: Double(device?.videoZoomFactor ?? 1),
+      compact: false
+    )
+    let rawType: OSType? = switch choix {
+    case .bayer: rawTypes.first { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }
+    case .proRaw: rawTypes.first { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }
+    case .processed: nil
+    }
+    if let rawType {
       if let processedFormat {
         settings = AVCapturePhotoSettings(rawPixelFormatType: rawType, processedFormat: processedFormat)
       } else {
@@ -1328,12 +1371,15 @@ final class CameraEngine: NSObject {
     if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
       settings.flashMode = flashMode
     }
-    // Live Photo et profondeur : incompatibles avec le RAW.
-    if !raw, photoOutput.isLivePhotoCaptureEnabled {
+    // Live Photo et profondeur : incompatibles avec le RAW. On regarde ce
+    // qu'on capture vraiment, pas ce qui a été demandé : un RAW refusé pour
+    // cause de zoom redevient une photo développée, qui les accepte.
+    let enRaw = rawType != nil
+    if !enRaw, photoOutput.isLivePhotoCaptureEnabled {
       settings.livePhotoMovieFileURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("persei-live-\(UUID().uuidString).mov")
     }
-    if !raw, photoOutput.isDepthDataDeliveryEnabled {
+    if !enRaw, photoOutput.isDepthDataDeliveryEnabled {
       settings.isDepthDataDeliveryEnabled = true
       settings.embedsDepthDataInPhoto = true
     }
