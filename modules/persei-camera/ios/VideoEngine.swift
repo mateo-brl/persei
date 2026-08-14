@@ -140,15 +140,11 @@ extension CameraEngine {
     }
     removeAudioInputLocked()
     session.automaticallyConfiguresCaptureDeviceForWideColor = true
-    if let device {
-      do {
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
-        if device.activeColorSpace != .sRGB {
-          device.activeColorSpace = .sRGB
-        }
-      } catch {}
-    }
+    // On ne touche PAS à l'espace colorimétrique ici : le format encore actif
+    // est celui de la vidéo, et un format 10 bits n'accepte souvent que le
+    // HLG. Lui imposer sRGB fait lever AVFoundation depuis sa file interne,
+    // ce qui tue l'app instantanément et sans message. Le retour au preset
+    // photo rétablit l'espace tout seul, et on le confirme après le commit.
     let zoomAvant = device?.videoZoomFactor
     session.sessionPreset = video.savedPhotoPreset ?? .photo
     if let device {
@@ -167,9 +163,27 @@ extension CameraEngine {
     reapplyPhotoOutputOptions()
     session.commitConfiguration()
 
+    // Après le commit, le format photo est actif : c'est le seul moment où
+    // demander sRGB a un sens, et seulement s'il l'accepte.
+    if let device { appliquerEspace(.sRGB, sur: device) }
+
     video.isActive = false
     refreshAssistOutputLocked()
     video.savedPhotoPreset = nil
+  }
+
+  /// Change l'espace colorimétrique seulement si le format actif le supporte.
+  /// AVFoundation refuse tout le reste par une exception, jamais par un retour
+  /// d'erreur : c'est la cause du plantage silencieux du 14 août.
+  private func appliquerEspace(_ espace: AVCaptureColorSpace, sur device: AVCaptureDevice) {
+    guard device.activeColorSpace != espace,
+          device.activeFormat.supportedColorSpaces.contains(espace)
+    else { return }
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      device.activeColorSpace = espace
+    } catch {}
   }
 
   private func addAudioInputLocked() {
@@ -292,8 +306,11 @@ extension CameraEngine {
         device.activeVideoMaxFrameDuration = duration
       }
 
+      // Le format qu'on vient de poser fait foi, mais on interroge le device
+      // plutôt que l'objet local : c'est lui qui lève l'exception.
       let wanted = colorSpace(for: video.request.range)
-      if format.supportedColorSpaces.contains(wanted) {
+      if device.activeColorSpace != wanted,
+         device.activeFormat.supportedColorSpaces.contains(wanted) {
         device.activeColorSpace = wanted
       }
 
