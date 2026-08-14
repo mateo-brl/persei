@@ -94,6 +94,8 @@ export interface VideoCapabilities {
   supportsPause: boolean;
   hasMicrophone: boolean;
   isRecording: boolean;
+  /** Espace libre au moment de la lecture, en octets. */
+  freeBytes: number;
 }
 
 export interface RecordingProgress {

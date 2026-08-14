@@ -526,7 +526,7 @@ extension CameraEngine {
     video.progressTimer = nil
   }
 
-  private func freeDiskBytes() -> Int64? {
+  func freeDiskBytes() -> Int64? {
     let url = FileManager.default.temporaryDirectory
     let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
     return values?.volumeAvailableCapacityForImportantUsage
@@ -564,6 +564,7 @@ extension CameraEngine {
       "supportsPause": supportsPause,
       "hasMicrophone": AVCaptureDevice.default(for: .audio) != nil,
       "isRecording": video.isRecording,
+      "freeBytes": Double(freeDiskBytes() ?? 0),
     ]
   }
 }
