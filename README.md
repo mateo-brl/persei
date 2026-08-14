@@ -10,7 +10,7 @@ Appareil photo iOS à contrôles manuels complets — ISO, vitesse d'obturation,
 
 ## Tests
 
-`npm test` lance les tests de la logique pure JS avec le lanceur intégré de Node, sans dépendance ajoutée. `cd native-tests && swift test` (après `bash native-tests/sync-sources.sh`) teste le moteur d'empilement et les calculs caméra sur macOS. Règle du projet : on ne pose un tag de build que sur des tests verts.
+`npm test` lance les tests de la logique pure JS avec le lanceur intégré de Node, sans dépendance ajoutée. `cd native-tests && swift test` (après `bash native-tests/sync-sources.sh`) teste le moteur d'empilement et les calculs caméra sur macOS. La CI compile en plus le projet iOS pour de vrai, puis **installe l'app dans un simulateur et vérifie qu'elle survit à son lancement** : c'est le seul filet contre une app qui se lie correctement et se fait tuer au démarrage. Règle du projet : on ne pose un tag de build que sur des tests verts.
 
 ## Mise en route (une fois)
 
@@ -32,5 +32,6 @@ Appareil photo iOS à contrôles manuels complets — ISO, vitesse d'obturation,
 - [x] v0.5 : alignement des trames (pose à main levée), focus peaking, histogramme, zebras, loupe, niveau, filtre météores, déclencheur volume et Camera Control
 - [x] v0.6-0.7 : presets par scénario, mode nuit automatique, empilement RAW linéaire, pose de jour par trames auto
 - [x] v0.8 : **vidéo** (résolutions et cadences lues sur le matériel, HDR 10 bits, Apple Log, ProRes, stabilisation, pause et reprise, photo pendant l'enregistrement, garde-fous disque et surchauffe), définitions photo 12/24/48 MP, lecture des codes QR
-- [ ] Écran verrouillé et Centre de contrôle (extensions iOS)
-- [ ] Vidéo cinématique (bokeh, iOS 26)
+- [x] v0.9 : raccourcis Siri et bouton Action, boutons de Centre de contrôle et d'écran verrouillé (cible WidgetKit), **vidéo cinématique** (flou d'arrière-plan réglable, iOS 26), son stéréo, filtre anti-vent, zoom audio, stabilisation réactive
+- [ ] Extension de capture depuis l'écran verrouillé (bouton Camera Control)
+- [ ] Sentry, page App Store, achat unique

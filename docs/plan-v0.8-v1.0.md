@@ -120,10 +120,16 @@ en-têtes du SDK :
   pas.
 - Indicateurs audio et choix du micro si l'API le permet.
 
-### 2c. Vidéo cinématique (si l'API iOS 26 le permet)
+### 2c. Vidéo cinématique (faite le 14 août 2026)
 
-Le bokeh vidéo d'Apple est exposé aux apps tierces depuis iOS 26. À confirmer,
-puis à intégrer si le coût est raisonnable.
+L'API iOS 26 est bien ouverte aux apps tierces et le runner compile avec le SDK
+26.5. Le mode impose ses conditions, toutes tenues côté code plutôt
+qu'espérées : il vit sur la caméra virtuelle et interdit la mise au point
+manuelle (activer le cinéma relâche donc tous les réglages manuels, et les
+setters refusent d'agir tant qu'il est actif), il exige une liste précise de
+types de métadonnées (la lecture des codes QR s'efface le temps du mode), et il
+plafonne à 30 images par seconde sans ProRes ni Log (les réglages sont ramenés
+avant que la caméra les voie).
 
 ## Phase 3 : intégration système (v0.9.x)
 
