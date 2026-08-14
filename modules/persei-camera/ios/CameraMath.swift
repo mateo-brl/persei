@@ -174,13 +174,18 @@ enum CameraMath {
     return size.width <= cap.width && size.height <= cap.height
   }
 
-  /// Définition à demander : celle qui est déjà posée sur la sortie si elle
-  /// reste acceptable, sinon la plus grande qui l'est. Rend `nil` quand aucune
-  /// ne convient : l'appelant ne pose alors rien du tout, ce qu'AVFoundation
-  /// accepte toujours.
+  /// Le plafond de la sortie appartient-il encore au format actif ? Non veut
+  /// dire qu'il a été calculé sur un autre format : plus aucune définition
+  /// n'est demandable tant qu'il n'est pas recalculé.
+  static func isPhotoCapStale(_ cap: PhotoSize, available: [PhotoSize]) -> Bool {
+    !available.isEmpty && !available.contains(cap)
+  }
+
+  /// Plus grande définition demandable : dans le format actif et sous le
+  /// plafond. Rend `nil` quand aucune ne convient ; l'appelant ne pose alors
+  /// rien du tout, ce qu'AVFoundation accepte toujours.
   static func usablePhotoSize(available: [PhotoSize], cap: PhotoSize?) -> PhotoSize? {
-    if let cap, isPhotoSizeAllowed(cap, available: available, cap: cap) { return cap }
-    return available
+    available
       .filter { isPhotoSizeAllowed($0, available: available, cap: cap) }
       .max { $0.pixels < $1.pixels }
   }
