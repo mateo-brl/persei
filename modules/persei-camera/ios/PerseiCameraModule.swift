@@ -183,6 +183,17 @@ public class PerseiCameraModule: Module {
       }
     }
 
+    /// Mode réclamé par un raccourci Siri avant l'ouverture de l'app. La clé
+    /// est écrite par PerseiIntents.swift, compilé dans la cible de l'app :
+    /// ce module vit dans un pod séparé, d'où la chaîne recopiée.
+    AsyncFunction("consumeLaunchMode") { () -> String? in
+      let cle = "persei.launchMode"
+      let reglages = UserDefaults.standard
+      let mode = reglages.string(forKey: cle)
+      if mode != nil { reglages.removeObject(forKey: cle) }
+      return mode
+    }
+
     AsyncFunction("setVideoMode") { (enabled: Bool, promise: Promise) in
       CameraEngine.shared.setVideoMode(enabled) { result in
         switch result {

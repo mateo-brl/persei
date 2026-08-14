@@ -64,6 +64,11 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   /** Autorisation micro, demandée seulement au passage en vidéo. */
   requestMicrophonePermission(): Promise<boolean>;
   /**
+   * Mode réclamé par un raccourci Siri ou le bouton Action avant l'ouverture
+   * (« meteors », « video », « photo »), consommé une seule fois.
+   */
+  consumeLaunchMode(): Promise<string | null>;
+  /**
    * Bascule la session en vidéo (ou revient en photo) et renvoie ce que le
    * matériel sait faire. En vidéo, le format est choisi explicitement : les
    * presets de session et le choix de format s'excluent.

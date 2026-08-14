@@ -1,12 +1,16 @@
 name: Compilation iOS
-# Compile réellement le projet natif sans passer par EAS ni TestFlight. C'est
-# le filet qui attrape les erreurs Swift (API Apple renommée, symbole absent)
-# en quinze minutes au lieu d'un build de production perdu.
+# Compile réellement le projet natif, puis lance l'app dans un simulateur.
+# La compilation attrape les erreurs Swift (API Apple renommée, symbole
+# absent) ; le démarrage attrape ce qu'aucun compilateur ne voit, en premier
+# lieu une app qui se fait tuer au lancement parce qu'une bibliothèque n'est
+# pas embarquée. Le tout sans EAS ni TestFlight.
 on:
   push:
     branches: ['**']
     paths:
       - 'modules/**'
+      - 'plugins/**'
+      - 'targets/**'
       - 'app.json'
       - 'package.json'
       - 'package-lock.json'
@@ -29,18 +33,61 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Outils disponibles
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
       - name: Générer le projet natif
         run: npx expo prebuild --platform ios --clean --no-install
       - name: Installer les pods
         run: cd ios && pod install
-      - name: Compiler
+      - name: Compiler en Release
         run: |
           cd ios
           espace=$(ls -d *.xcworkspace | head -1)
           schema=$(basename "$espace" .xcworkspace)
           echo "Compilation de $schema"
           xcodebuild -workspace "$espace" -scheme "$schema" \
-            -configuration Debug -sdk iphonesimulator \
+            -configuration Release -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES \
             -quiet build
+      - name: Démarrer l'app dans un simulateur
+        run: |
+          set -euo pipefail
+          app=$(find ios/build/Build/Products/Release-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          echo "Application : $app"
+
+          modele=$(xcrun simctl list devicetypes -j | python3 -c "
+import json, sys
+types = json.load(sys.stdin)['devicetypes']
+iphones = [t['identifier'] for t in types if 'iPhone' in t['name']]
+print(iphones[-1])
+")
+          systeme=$(xcrun simctl list runtimes -j | python3 -c "
+import json, sys
+runtimes = [r for r in json.load(sys.stdin)['runtimes'] if r['isAvailable'] and 'iOS' in r['name']]
+print(runtimes[-1]['identifier'])
+")
+          echo "Simulateur : $modele sur $systeme"
+          udid=$(xcrun simctl create persei-demarrage "$modele" "$systeme")
+          xcrun simctl boot "$udid"
+          xcrun simctl install "$udid" "$app"
+
+          # `launch` rend le pid du processus hôte : s'il a disparu vingt
+          # secondes plus tard, l'app est morte au démarrage.
+          sortie=$(xcrun simctl launch "$udid" com.mateobaril.persei)
+          echo "$sortie"
+          pid=$(echo "$sortie" | awk -F': ' '{print $2}' | tr -d ' ')
+          sleep 20
+
+          if ! ps -p "$pid" > /dev/null; then
+            echo "::error::L'app ne survit pas à son lancement (processus $pid disparu)"
+            ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -5
+            cat "$(ls -t ~/Library/Logs/DiagnosticReports/Persei* 2>/dev/null | head -1)" 2>/dev/null | head -60
+            exit 1
+          fi
+          echo "L'app tourne toujours après vingt secondes."
+          xcrun simctl shutdown "$udid" || true
+          xcrun simctl delete "$udid" || true
