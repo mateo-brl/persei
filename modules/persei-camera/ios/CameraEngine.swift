@@ -38,6 +38,8 @@ final class CameraEngine: NSObject {
   let video = VideoState()
   /// Promesse de `stopRecording` en attente du fichier finalisé.
   var pendingStopCompletion: ((Result<String, Error>) -> Void)?
+  /// Promesse de `startRecording`, tenue quand le fichier commence vraiment.
+  var pendingStartCompletion: ((Result<Void, Error>) -> Void)?
   /// Cause d'un arrêt subi (surchauffe, interruption, disque plein).
   var stopReason: String?
   var onRecordingProgress: (([String: Any]) -> Void)?
@@ -58,6 +60,12 @@ final class CameraEngine: NSObject {
   let processor = FrameProcessor()
   private let videoDataOutput = AVCaptureVideoDataOutput()
   private let processingQueue = DispatchQueue(label: "app.persei.camera.processing")
+  /// Lecture des codes (QR, codes-barres) dans la préview, comme l'app Camera.
+  private let metadataOutput = AVCaptureMetadataOutput()
+  private var lastCodeValue: String?
+  private var lastCodeDate = Date.distantPast
+  /// Code détecté : { value, type }.
+  var onCodeDetected: (([String: Any]) -> Void)?
   weak var assistView: PerseiCameraView?
   /// Histogramme 64 bins vers JS (~5 Hz quand activé).
   var onHistogram: (([Double]) -> Void)?
@@ -206,6 +214,21 @@ final class CameraEngine: NSObject {
         session.addOutput(videoDataOutput)
       }
     }
+    if !session.outputs.contains(metadataOutput), session.canAddOutput(metadataOutput) {
+      session.addOutput(metadataOutput)
+      metadataOutput.setMetadataObjectsDelegate(self, queue: processingQueue)
+    }
+    if session.outputs.contains(metadataOutput) {
+      // Les types disponibles dépendent de la session : les demander avant de
+      // l'avoir configurée lève une exception.
+      let wanted: [AVMetadataObject.ObjectType] = [
+        .qr, .aztec, .dataMatrix, .pdf417, .ean13, .ean8, .code128, .code39, .upce,
+      ]
+      metadataOutput.metadataObjectTypes = wanted.filter {
+        metadataOutput.availableMetadataObjectTypes.contains($0)
+      }
+    }
+
     // Frames en portrait pour que les calques d'aide collent à la préview.
     if let connection = videoDataOutput.connection(with: .video) {
       if #available(iOS 17.0, *) {
@@ -793,6 +816,18 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// Ajouter la sortie vidéo désactive Live Photo et peut désactiver la
+  /// profondeur : en sortant du mode vidéo, on remet les préférences photo.
+  /// À appeler entre `beginConfiguration` et `commitConfiguration`.
+  func reapplyPhotoOutputOptions() {
+    if photoOutput.isLivePhotoCaptureSupported {
+      photoOutput.isLivePhotoCaptureEnabled = livePhotoEnabled
+    }
+    if photoOutput.isDepthDataDeliverySupported {
+      photoOutput.isDepthDataDeliveryEnabled = depthEnabled
+    }
+  }
+
   /// Coupe l'analyse d'image (histogramme, peaking, zebras) quand la vidéo
   /// mange déjà tout le budget matériel. Au-delà, la session refuse de
   /// démarrer ou lâche des images en pleine prise.
@@ -1082,6 +1117,28 @@ final class CameraEngine: NSObject {
       settings.embedsDepthDataInPhoto = true
     }
     return settings
+  }
+}
+
+extension CameraEngine: AVCaptureMetadataOutputObjectsDelegate {
+  /// Un code reste dans le champ pendant des dizaines d'images : on ne le
+  /// remonte qu'une fois, et de nouveau seulement après deux secondes.
+  func metadataOutput(
+    _ output: AVCaptureMetadataOutput,
+    didOutput metadataObjects: [AVMetadataObject],
+    from connection: AVCaptureConnection
+  ) {
+    guard let onCodeDetected else { return }
+    guard let readable = metadataObjects.compactMap({ $0 as? AVMetadataMachineReadableCodeObject })
+      .first(where: { ($0.stringValue?.isEmpty == false) }),
+      let value = readable.stringValue
+    else { return }
+
+    let now = Date()
+    if value == lastCodeValue, now.timeIntervalSince(lastCodeDate) < 2 { return }
+    lastCodeValue = value
+    lastCodeDate = now
+    onCodeDetected(["value": value, "type": readable.type.rawValue])
   }
 }
 

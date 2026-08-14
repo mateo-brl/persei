@@ -31,7 +31,8 @@ public class PerseiCameraModule: Module {
       "onShutterButton",
       "onRecordingProgress",
       "onRecordingStopped",
-      "onSystemPressure"
+      "onSystemPressure",
+      "onCodeDetected"
     )
 
     OnStartObserving {
@@ -43,6 +44,9 @@ public class PerseiCameraModule: Module {
       }
       CameraEngine.shared.onSystemPressure = { [weak self] payload in
         self?.sendEvent("onSystemPressure", payload)
+      }
+      CameraEngine.shared.onCodeDetected = { [weak self] payload in
+        self?.sendEvent("onCodeDetected", payload)
       }
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
@@ -66,6 +70,7 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onRecordingProgress = nil
       CameraEngine.shared.onRecordingStopped = nil
       CameraEngine.shared.onSystemPressure = nil
+      CameraEngine.shared.onCodeDetected = nil
     }
 
     View(PerseiCameraView.self) {}

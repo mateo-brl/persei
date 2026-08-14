@@ -1,4 +1,5 @@
 import { Image } from 'expo-image';
+import * as Linking from 'expo-linking';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { SymbolView } from 'expo-symbols';
 import * as MediaLibrary from 'expo-media-library/legacy';
@@ -57,6 +58,7 @@ import {
   explainStop,
   frameRatesFor,
 } from '../lib/video';
+import { describeCode, isOpenableUrl } from '../lib/codes';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
 
 const ACCENT = '#ffb800';
@@ -111,6 +113,7 @@ export default function CameraScreen() {
   const [timerSecs, setTimerSecs] = useState(0);
   const [grid, setGrid] = useState(false);
   const [autoNight, setAutoNight] = useState(true);
+  const [codeScan, setCodeScan] = useState(true);
 
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -129,6 +132,7 @@ export default function CameraScreen() {
   const [thumbUri, setThumbUri] = useState<string | null>(null);
   const [lastUris, setLastUris] = useState<string[]>([]);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [code, setCode] = useState<{ value: string; type: string } | null>(null);
 
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
   const liveRef = useRef<ExposureUpdate | null>(null);
@@ -171,6 +175,18 @@ export default function CameraScreen() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Codes QR et codes-barres lus dans la préview, comme l'app Camera.
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onCodeDetected', setCode);
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!code) return;
+    const t = setTimeout(() => setCode(null), 6000);
+    return () => clearTimeout(t);
+  }, [code]);
 
   // Aides de visée natives + loupe automatique pendant le réglage du focus.
   useEffect(() => {
@@ -822,6 +838,23 @@ export default function CameraScreen() {
         </View>
 
         <View style={styles.bottomArea}>
+          {code && codeScan && !posing && !recording ? (
+            <Pressable
+              style={styles.codeBanner}
+              onPress={() => {
+                if (isOpenableUrl(code.value)) {
+                  Linking.openURL(code.value).catch(() => setToast('Impossible d’ouvrir ce lien'));
+                }
+                setCode(null);
+              }}
+            >
+              <SymbolView name="qrcode.viewfinder" size={15} tintColor="#000" />
+              <Text style={styles.codeText} numberOfLines={1}>
+                {describeCode(code.value, code.type)}
+              </Text>
+            </Pressable>
+          ) : null}
+
           {toast ? (
             <View style={styles.toast}>
               <Text style={styles.toastText} numberOfLines={3}>
@@ -950,6 +983,14 @@ export default function CameraScreen() {
                   labels={['Off', 'On']}
                   value={autoNight ? 'on' : 'off'}
                   onChange={(v) => setAutoNight(v === 'on')}
+                />
+              </SettingRow>
+              <SettingRow label="Codes QR" helpKey="codes">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={codeScan ? 'on' : 'off'}
+                  onChange={(v) => setCodeScan(v === 'on')}
                 />
               </SettingRow>
               <SettingRow label="Retardateur" helpKey="timer">
@@ -1103,16 +1144,23 @@ export default function CameraScreen() {
           />
 
           <View style={styles.shutterRow}>
-            <Pressable
-              style={styles.thumbBox}
-              onPress={() => {
-                if (lastUris.length) setViewerOpen(true);
-              }}
-            >
-              {thumbUri ? (
-                <Image source={{ uri: thumbUri }} style={styles.thumb} contentFit="cover" />
-              ) : null}
-            </Pressable>
+            {recording ? (
+              // Photo pendant l'enregistrement, comme l'app Camera.
+              <Pressable style={styles.flipButton} onPress={shoot} disabled={capturing}>
+                <SymbolView name="camera.fill" size={19} tintColor="#e8e8e8" />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={styles.thumbBox}
+                onPress={() => {
+                  if (lastUris.length) setViewerOpen(true);
+                }}
+              >
+                {thumbUri ? (
+                  <Image source={{ uri: thumbUri }} style={styles.thumb} contentFit="cover" />
+                ) : null}
+              </Pressable>
+            )}
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
               onPress={triggerShutter}
@@ -1885,6 +1933,23 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: 'rgba(170, 15, 0, 0.4)',
+  },
+  codeBanner: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    maxWidth: '92%',
+  },
+  codeText: {
+    color: '#000',
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   videoSummary: {
     color: ACCENT,
