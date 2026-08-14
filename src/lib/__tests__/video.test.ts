@@ -23,6 +23,7 @@ const proCaps: VideoCapabilities = {
   supportsPause: true,
   hasMicrophone: true,
   isRecording: false,
+  freeBytes: 64_000_000_000,
 };
 
 /** Appareil d'entrée de gamme : 1080p seulement, ni Log ni ProRes. */
@@ -36,6 +37,7 @@ const basicCaps: VideoCapabilities = {
   supportsPause: false,
   hasMicrophone: true,
   isRecording: false,
+  freeBytes: 64_000_000_000,
 };
 
 const pro4K120: VideoSettings = {

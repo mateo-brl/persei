@@ -57,6 +57,7 @@ import {
   describeVideoMode,
   explainStop,
   frameRatesFor,
+  remainingSeconds,
 } from '../lib/video';
 import { describeCode, isOpenableUrl } from '../lib/codes';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
@@ -1144,8 +1145,9 @@ export default function CameraScreen() {
           />
 
           <View style={styles.shutterRow}>
-            {recording ? (
-              // Photo pendant l'enregistrement, comme l'app Camera.
+            {recording && videoSettings.range !== 'log' ? (
+              // Photo pendant l'enregistrement, comme l'app Camera. Impossible
+              // en Log : AVFoundation désactive la sortie photo dans ce mode.
               <Pressable style={styles.flipButton} onPress={shoot} disabled={capturing}>
                 <SymbolView name="camera.fill" size={19} tintColor="#e8e8e8" />
               </Pressable>
@@ -1325,7 +1327,12 @@ function VideoBar({
 
   return (
     <View style={styles.poseBar}>
-      <Text style={styles.videoSummary}>{describeVideoMode(settings)}</Text>
+      <Text style={styles.videoSummary}>
+        {describeVideoMode(settings)}
+        {caps && caps.freeBytes > 0
+          ? `  ·  ${formatDuration(remainingSeconds(settings, caps.freeBytes))} d’enregistrement possible`
+          : ''}
+      </Text>
 
       <Segmented
         options={heights.map(String)}
