@@ -249,7 +249,7 @@ extension CameraMath {
     guard currentIso.isFinite, currentIso > 0, currentSeconds > 0, limits.minIso > 0 else {
       return plafond
     }
-    let sansSurexposition = currentIso * currentSeconds / limits.minIso
+    let sansSurexposition = currentIso * currentSeconds / Double(limits.minIso)
     return clampSeconds(min(plafond, sansSurexposition), in: limits)
   }
 
@@ -266,9 +266,9 @@ extension CameraMath {
     currentSeconds: Double,
     targetSeconds: Double,
     in limits: ExposureLimits
-  ) -> Double {
+  ) -> Float {
     guard currentIso.isFinite, currentSeconds > 0, targetSeconds > 0 else {
-      return clampIso(limits.maxIso, in: limits)
+      return limits.maxIso
     }
     return clampIso(currentIso * currentSeconds / targetSeconds, in: limits)
   }
