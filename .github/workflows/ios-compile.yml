@@ -1,0 +1,46 @@
+name: Compilation iOS
+# Compile réellement le projet natif sans passer par EAS ni TestFlight. C'est
+# le filet qui attrape les erreurs Swift (API Apple renommée, symbole absent)
+# en quinze minutes au lieu d'un build de production perdu.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'modules/**'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ios-compile.yml'
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Projet iOS (simulateur, sans signature)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Générer le projet natif
+        run: npx expo prebuild --platform ios --clean --no-install
+      - name: Installer les pods
+        run: cd ios && pod install
+      - name: Compiler
+        run: |
+          cd ios
+          espace=$(ls -d *.xcworkspace | head -1)
+          schema=$(basename "$espace" .xcworkspace)
+          echo "Compilation de $schema"
+          xcodebuild -workspace "$espace" -scheme "$schema" \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES \
+            -quiet build

@@ -1,21 +1,27 @@
 name: Tests natifs
 on:
   push:
-    branches: [main]
+    branches: ['**']
     paths:
       - 'modules/persei-camera/ios/**'
       - 'native-tests/**'
+      - '.github/workflows/native-tests.yml'
+  pull_request:
+  workflow_call:
   workflow_dispatch:
 
-concurrency: { group: native-tests, cancel-in-progress: true }
+concurrency:
+  group: native-tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  stacker:
+  swift:
+    name: Moteur d'empilement et calculs caméra
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Copier la source testée (vérité unique dans modules/)
-        run: cp modules/persei-camera/ios/FrameStacker.swift native-tests/Sources/
-      - name: Tests du moteur d'empilement
+      - name: Copier les sources testées (vérité unique dans modules/)
+        run: bash native-tests/sync-sources.sh
+      - name: Tests Swift
         run: cd native-tests && swift test

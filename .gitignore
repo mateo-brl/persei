@@ -42,4 +42,5 @@ example
 /ios
 /android
 native-tests/Sources/FrameStacker.swift
+native-tests/Sources/CameraMath.swift
 native-tests/.build/

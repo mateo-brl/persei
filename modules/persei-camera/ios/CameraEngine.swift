@@ -215,43 +215,35 @@ final class CameraEngine: NSObject {
     photoOutput.maxPhotoDimensions = preferHighResolution ? dimensions.last! : dimensions.first!
   }
 
+  /// Traduction d'une caméra physique en description testable (CameraMath).
+  private func lensSpec(of device: AVCaptureDevice) -> LensSpec {
+    let kind: LensKind
+    switch device.deviceType {
+    case .builtInUltraWideCamera: kind = .ultraWide
+    case .builtInWideAngleCamera: kind = .wide
+    case .builtInTelephotoCamera: kind = .telephoto
+    default: kind = .other
+    }
+    return LensSpec(
+      kind: kind,
+      secondaryCrops: device.activeFormat.secondaryNativeResolutionZoomFactors.map { Double($0) }
+    )
+  }
+
+  private func switchOvers(of device: AVCaptureDevice) -> [Double] {
+    device.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
+  }
+
   /// Pastilles de zoom façon app Apple (0,5× / 1× / 2× / 5× sur 16 Pro) :
   /// `factor` est l'affichage, `zoom` le videoZoomFactor correspondant sur le
   /// device virtuel. Le 2× vient du recadrage natif qualité optique du 48 MP.
   private func zoomPresets(of device: AVCaptureDevice) -> [[String: Double]] {
     guard device.position == .back else { return [] }
-    let constituents = device.constituentDevices
-    guard constituents.count >= 2 else {
-      return [["factor": 1.0, "zoom": 1.0]]
-    }
-
-    var presets: [[String: Double]] = []
-    let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { Double(truncating: $0) }
-    let hasUltraWide = constituents.contains { $0.deviceType == .builtInUltraWideCamera }
-    let wideZoom = hasUltraWide ? (switchOvers.first ?? 2.0) : 1.0
-
-    if hasUltraWide {
-      presets.append(["factor": 0.5, "zoom": 1.0])
-    }
-    presets.append(["factor": 1.0, "zoom": wideZoom])
-
-    if let wide = constituents.first(where: { $0.deviceType == .builtInWideAngleCamera }) {
-      let crops = wide.activeFormat.secondaryNativeResolutionZoomFactors.map { Double($0) }
-      if let crop = crops.first, crop > 1 {
-        presets.append(["factor": crop, "zoom": wideZoom * crop])
-      }
-    }
-
-    if constituents.contains(where: { $0.deviceType == .builtInTelephotoCamera }) {
-      if hasUltraWide, switchOvers.count >= 2, wideZoom > 0 {
-        presets.append(["factor": (switchOvers[1] / wideZoom * 10).rounded() / 10, "zoom": switchOvers[1]])
-      } else if !hasUltraWide, let first = switchOvers.first {
-        presets.append(["factor": first, "zoom": first])
-      }
-    }
-
-    presets.sort { ($0["factor"] ?? 0) < ($1["factor"] ?? 0) }
-    return presets
+    let presets = CameraMath.zoomPresets(
+      constituents: device.constituentDevices.map(lensSpec(of:)),
+      switchOvers: switchOvers(of: device)
+    )
+    return presets.map { ["factor": $0.factor, "zoom": $0.zoom] }
   }
 
   private func capabilities(of device: AVCaptureDevice) -> [String: Any] {
@@ -348,19 +340,15 @@ final class CameraEngine: NSObject {
     at zoom: CGFloat
   ) -> (device: AVCaptureDevice, zoom: CGFloat) {
     let constituents = virtual.constituentDevices
-    let switchOvers = virtual.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
-    let ultraWide = constituents.first { $0.deviceType == .builtInUltraWideCamera }
-    let wide = constituents.first { $0.deviceType == .builtInWideAngleCamera } ?? virtual
-    let telephoto = constituents.first { $0.deviceType == .builtInTelephotoCamera }
-
-    if let ultraWide, let firstSwitch = switchOvers.first, zoom < firstSwitch {
-      return (ultraWide, zoom)
+    let pick = CameraMath.physicalPick(
+      constituents: constituents.map(lensSpec(of:)),
+      switchOvers: switchOvers(of: virtual),
+      zoom: Double(zoom)
+    )
+    guard let pick, constituents.indices.contains(pick.index) else {
+      return (virtual, zoom)
     }
-    if let telephoto, switchOvers.count >= 2, zoom >= switchOvers[1] {
-      return (telephoto, zoom / switchOvers[1])
-    }
-    let wideBase = ultraWide != nil ? (switchOvers.first ?? 2) : 1
-    return (wide, max(1, zoom / wideBase))
+    return (constituents[pick.index], CGFloat(pick.zoom))
   }
 
   /// À appeler sur la sessionQueue. Remplace l'input par la caméra physique
@@ -451,23 +439,22 @@ final class CameraEngine: NSObject {
   /// grand-angle plafonne bien plus bas que la principale) : dépasser ces
   /// bornes fait lever une NSException par AVFoundation. On prend donc
   /// l'intersection des deux formats.
-  private func exposureBounds(of device: AVCaptureDevice) -> (
-    minIso: Float, maxIso: Float, minSeconds: Double, maxSeconds: Double
-  ) {
-    var minIso = device.activeFormat.minISO
-    var maxIso = device.activeFormat.maxISO
-    var minSeconds = device.activeFormat.minExposureDuration.seconds
-    var maxSeconds = device.activeFormat.maxExposureDuration.seconds
-    if !device.constituentDevices.isEmpty, let active = device.activePrimaryConstituent {
-      let format = active.activeFormat
-      minIso = max(minIso, format.minISO)
-      maxIso = min(maxIso, format.maxISO)
-      minSeconds = max(minSeconds, format.minExposureDuration.seconds)
-      maxSeconds = min(maxSeconds, format.maxExposureDuration.seconds)
+  private func exposureBounds(of device: AVCaptureDevice) -> ExposureLimits {
+    let virtual = limits(of: device.activeFormat)
+    var active: ExposureLimits?
+    if !device.constituentDevices.isEmpty, let primary = device.activePrimaryConstituent {
+      active = limits(of: primary.activeFormat)
     }
-    if minIso > maxIso { (minIso, maxIso) = (maxIso, maxIso) }
-    if minSeconds > maxSeconds { minSeconds = maxSeconds }
-    return (minIso, maxIso, minSeconds, maxSeconds)
+    return CameraMath.intersect(virtual, active)
+  }
+
+  private func limits(of format: AVCaptureDevice.Format) -> ExposureLimits {
+    ExposureLimits(
+      minIso: format.minISO,
+      maxIso: format.maxISO,
+      minSeconds: format.minExposureDuration.seconds,
+      maxSeconds: format.maxExposureDuration.seconds
+    )
   }
 
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
@@ -482,10 +469,15 @@ final class CameraEngine: NSObject {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
         let bounds = self.exposureBounds(of: device)
-        let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
-        let clampedSeconds = min(max(shutterSeconds, bounds.minSeconds), bounds.maxSeconds)
-        let duration = CMTime(seconds: clampedSeconds, preferredTimescale: 1_000_000_000)
-        device.setExposureModeCustom(duration: duration, iso: clampedIso, completionHandler: nil)
+        let duration = CMTime(
+          seconds: CameraMath.clampSeconds(shutterSeconds, in: bounds),
+          preferredTimescale: 1_000_000_000
+        )
+        device.setExposureModeCustom(
+          duration: duration,
+          iso: CameraMath.clampIso(iso, in: bounds),
+          completionHandler: nil
+        )
       } catch {}
     }
   }
@@ -784,10 +776,12 @@ final class CameraEngine: NSObject {
         do {
           try poseDevice.lockForConfiguration()
           defer { poseDevice.unlockForConfiguration() }
-          let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
           poseDevice.setExposureModeCustom(
-            duration: CMTime(seconds: min(1.0, bounds.maxSeconds), preferredTimescale: 1_000_000_000),
-            iso: clampedIso,
+            duration: CMTime(
+              seconds: CameraMath.poseFrameSeconds(in: bounds),
+              preferredTimescale: 1_000_000_000
+            ),
+            iso: CameraMath.clampIso(iso, in: bounds),
             completionHandler: nil
           )
         } catch {
