@@ -8,6 +8,7 @@ import {
   DEFAULT_VIDEO,
   describeVideoMode,
   explainStop,
+  explainVideoError,
   frameRatesFor,
   remainingSeconds,
 } from '../video';
@@ -117,4 +118,12 @@ test('un arrêt subi est expliqué en clair', () => {
   assert.match(explainStop('thermal'), /chauffe/);
   assert.match(explainStop('interruption'), /système/);
   assert.match(explainStop('inconnu'), /sauvegardée/);
+});
+
+test('les échecs vidéo connus sont expliqués sans perdre leur code', () => {
+  const manqueEspace = explainVideoError('ERR_RECORDING_START P40: not enough free space');
+  assert.match(manqueEspace, /espace/);
+  assert.match(manqueEspace, /P40/, 'le code doit rester lisible pour le débogage');
+  assert.match(explainVideoError('P45: no format'), /résolution/);
+  assert.equal(explainVideoError('boum inconnu'), 'boum inconnu');
 });

@@ -56,6 +56,7 @@ import {
   DEFAULT_VIDEO,
   describeVideoMode,
   explainStop,
+  explainVideoError,
   frameRatesFor,
   remainingSeconds,
 } from '../lib/video';
@@ -553,7 +554,7 @@ export default function CameraScreen() {
           if (!cancelled) setVideoCaps(null);
         }
       } catch (e) {
-        if (!cancelled) setToast(`Vidéo : ${formatError(e)}`);
+        if (!cancelled) setToast(explainVideoError(formatError(e)));
       }
     })();
     return () => {
@@ -565,7 +566,7 @@ export default function CameraScreen() {
     (patch: Partial<VideoSettings>) => {
       const next = clampVideoSettings({ ...videoSettingsRef.current, ...patch }, videoCaps);
       setVideoSettings(next);
-      PerseiCamera.configureVideo(next).catch((e) => setToast(`Vidéo : ${formatError(e)}`));
+      PerseiCamera.configureVideo(next).catch((e) => setToast(explainVideoError(formatError(e))));
     },
     [videoCaps]
   );
@@ -592,7 +593,7 @@ export default function CameraScreen() {
       setRecPaused(false);
     } catch (e) {
       deactivateKeepAwake('video').catch(() => {});
-      setToast(`Vidéo : ${formatError(e)}`);
+      setToast(explainVideoError(formatError(e)));
     }
   }, []);
 
@@ -606,7 +607,7 @@ export default function CameraScreen() {
     } catch (e) {
       setRecording(false);
       setRecPaused(false);
-      setToast(`Vidéo : ${formatError(e)}`);
+      setToast(explainVideoError(formatError(e)));
     } finally {
       deactivateKeepAwake('video').catch(() => {});
     }
