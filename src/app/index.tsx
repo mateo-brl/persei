@@ -162,6 +162,8 @@ const HELP_TEXTS: Record<string, string> = {
     "Recale chaque image sur la première pendant la pose. Permet de poser sans trépied si tu restes à peu près stable.",
   meteorFilter:
     "Ne garde pour la fusion max que les images où quelque chose est passé dans le ciel. Les traînées ressortent sur un fond plus propre.",
+  autoNight:
+    "Quand la scène est sombre et que tu es en photo simple, le déclencheur lance automatiquement une pose alignée de 10 s au lieu d'un cliché bruité. L'équivalent du mode Nuit d'Apple, en mieux réglable.",
 };
 
 function formatError(e: unknown): string {
@@ -220,6 +222,7 @@ export default function CameraScreen() {
   const [bracketEv, setBracketEv] = useState(0);
   const [timerSecs, setTimerSecs] = useState(0);
   const [grid, setGrid] = useState(false);
+  const [autoNight, setAutoNight] = useState(true);
 
   const [activeParam, setActiveParam] = useState<ParamKey | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -601,6 +604,32 @@ export default function CameraScreen() {
     }
   }, [raw, caps, bracketEv]);
 
+  /** Mode nuit auto : pose alignée de 10 s à la place d'un cliché bruité. */
+  const captureNightShot = useCallback(async () => {
+    setPosing(true);
+    setPoseProgress(null);
+    setToast('Scène sombre : pose de 10 s alignée. Reste stable.');
+    activateKeepAwakeAsync('pose').catch(() => {});
+    try {
+      const media = await MediaLibrary.requestPermissionsAsync();
+      if (!media.granted) {
+        setToast('Accès photothèque refusé');
+        return;
+      }
+      const uris = await PerseiCamera.startLongExposure(10, 1600, 'mean', true, false, true);
+      await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
+      setLastUris(uris);
+      if (uris[0]) setThumbUri(uris[0]);
+      setToast('Photo de nuit enregistrée ✓');
+    } catch (e) {
+      setToast(`Échec pose : ${formatError(e)}`);
+    } finally {
+      setPosing(false);
+      setPoseProgress(null);
+      deactivateKeepAwake('pose').catch(() => {});
+    }
+  }, []);
+
   const capture = useCallback(() => {
     if (timerSecs === 0) {
       shoot();
@@ -626,10 +655,31 @@ export default function CameraScreen() {
       } else {
         startPose();
       }
-    } else {
-      capture();
+      return;
     }
-  }, [capturing, countdown, caps, captureMode, front, posing, startPose, capture]);
+    // Mode nuit auto : scène sombre détectée sur le capteur (l'auto pousse
+    // ISO et vitesse à fond) → pose alignée au lieu d'un cliché bruité.
+    const live = liveRef.current;
+    const darkScene = live != null && live.iso > 1500 && live.shutter > 1 / 35;
+    if (autoNight && exposureAuto && !front && timerSecs === 0 && darkScene) {
+      if (!posing) captureNightShot();
+      return;
+    }
+    capture();
+  }, [
+    capturing,
+    countdown,
+    caps,
+    captureMode,
+    front,
+    posing,
+    startPose,
+    capture,
+    autoNight,
+    exposureAuto,
+    timerSecs,
+    captureNightShot,
+  ]);
 
   // Boutons volume / Camera Control = déclencheur physique.
   const shutterRef = useRef(triggerShutter);
@@ -880,6 +930,14 @@ export default function CameraScreen() {
                   />
                 </SettingRow>
               ) : null}
+              <SettingRow label="Mode nuit auto" helpKey="autoNight">
+                <Segmented
+                  options={['off', 'on']}
+                  labels={['Off', 'On']}
+                  value={autoNight ? 'on' : 'off'}
+                  onChange={(v) => setAutoNight(v === 'on')}
+                />
+              </SettingRow>
               <SettingRow label="Retardateur" helpKey="timer">
                 <Segmented
                   options={['0', '3', '10']}
