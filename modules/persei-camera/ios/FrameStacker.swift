@@ -200,18 +200,16 @@ final class FrameStacker {
       : .success(uris)
   }
 
-  /// Étirement + conversion d'affichage. En RAW linéaire : gain d'exposition
-  /// dans l'espace linéaire (physiquement juste) puis gamma d'affichage.
+  /// Étirement d'affichage. L'encodage gamma final est fait par write()
+  /// (matchedFromWorkingSpace) : ici tout se passe en linéaire.
   private func displayRender(of image: CIImage) -> CIImage {
-    var output = autoStretch(image)
-    if stackedLinearRaw {
-      output = output.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.45])
-    }
-    return output
+    autoStretch(image)
   }
 
-  /// Mesure le pic de luminosité de l'image ; si la scène est sombre, remonte
-  /// l'exposition (jusqu'à +4 EV) pour révéler ce qui a été accumulé.
+  /// Mesure le pic de luminosité (en LINÉAIRE, l'espace de travail Core
+  /// Image, lu en demi-flottants pour ne pas quantifier les scènes de nuit
+  /// à zéro) ; si la scène est sombre, remonte l'exposition jusqu'à +4 EV.
+  /// Seuils en linéaire : 0,38 ≈ 65 % affiché, 0,68 ≈ 85 % affiché.
   private func autoStretch(_ image: CIImage) -> CIImage {
     guard let peakImage = CIFilter(
       name: "CIAreaMaximum",
@@ -221,19 +219,21 @@ final class FrameStacker {
       ]
     )?.outputImage else { return image }
 
-    var pixel = [UInt8](repeating: 0, count: 4)
-    ciContext.render(
-      peakImage,
-      toBitmap: &pixel,
-      rowBytes: 4,
-      bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-      format: .RGBA8,
-      colorSpace: nil
-    )
-    let peak = Double(max(pixel[0], pixel[1], pixel[2])) / 255.0
-    guard peak > 0.001, peak < 0.65 else { return image }
+    var pixel = [Float16](repeating: 0, count: 4)
+    pixel.withUnsafeMutableBytes { buffer in
+      ciContext.render(
+        peakImage,
+        toBitmap: buffer.baseAddress!,
+        rowBytes: 8,
+        bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+        format: .RGBAh,
+        colorSpace: nil
+      )
+    }
+    let peak = Double(max(pixel[0], max(pixel[1], pixel[2])))
+    guard peak.isFinite, peak > 0.00002, peak < 0.38 else { return image }
 
-    let ev = min(4.0, log2(0.85 / peak))
+    let ev = min(4.0, log2(0.68 / peak))
     guard ev > 0.2 else { return image }
     return image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
   }
@@ -241,9 +241,13 @@ final class FrameStacker {
   private func write(image: CIImage, suffix: String, colorSpace: CGColorSpace) -> String? {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("persei-pose-\(suffix)-\(UUID().uuidString).heic")
+    // Conversion explicite espace de travail (linéaire) → espace d'affichage :
+    // sans elle, les octets partent linéaires dans le fichier et l'image
+    // paraît écrasée dans les sombres.
+    let encoded = image.matchedFromWorkingSpace(to: colorSpace) ?? image
     do {
       try ciContext.writeHEIFRepresentation(
-        of: image,
+        of: encoded,
         to: url,
         format: .RGBA8,
         colorSpace: colorSpace,
