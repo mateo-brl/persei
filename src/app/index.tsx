@@ -145,6 +145,7 @@ export default function CameraScreen() {
   const [lastUris, setLastUris] = useState<string[]>([]);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [code, setCode] = useState<{ value: string; type: string } | null>(null);
+  const [crashReport, setCrashReport] = useState<string | null>(null);
 
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
   const liveRef = useRef<ExposureUpdate | null>(null);
@@ -187,6 +188,12 @@ export default function CameraScreen() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Trace du plantage précédent, s'il y en a eu un : une exception native tue
+  // l'app sans rien afficher, c'est le seul moyen de savoir ce qui a cassé.
+  useEffect(() => {
+    PerseiCamera.consumeLastCrash().then(setCrashReport).catch(() => {});
+  }, []);
 
   // Codes QR et codes-barres lus dans la préview, comme l'app Camera.
   useEffect(() => {
@@ -692,6 +699,13 @@ export default function CameraScreen() {
     const sub = PerseiCamera.addListener('onSystemPressure', (payload) => {
       if (payload.level === 'serious') {
         setToast('Le téléphone chauffe. Baisse la résolution ou la cadence si ça continue.');
+      } else if (payload.level === 'critical' || payload.level === 'shutdown') {
+        setRecording(false);
+        setToast(
+          'Trop chaud : la caméra a été allégée et l’enregistrement arrêté. Laisse refroidir une minute.'
+        );
+      } else if (payload.level === 'sessionError') {
+        setToast(payload.message ?? 'Erreur de session caméra (P12). La caméra a redémarré.');
       }
     });
     return () => sub.remove();
@@ -902,6 +916,16 @@ export default function CameraScreen() {
         </View>
 
         <View style={styles.bottomArea}>
+          {crashReport ? (
+            <Pressable style={styles.crashCard} onPress={() => setCrashReport(null)}>
+              <Text style={styles.crashTitle}>Dernier plantage</Text>
+              <ScrollView style={styles.crashScroll}>
+                <Text style={styles.crashText}>{crashReport}</Text>
+              </ScrollView>
+              <Text style={styles.viewerHint}>Touche pour fermer</Text>
+            </Pressable>
+          ) : null}
+
           {code && codeScan && !posing && !recording ? (
             <Pressable
               style={styles.codeBanner}
@@ -1284,9 +1308,16 @@ export default function CameraScreen() {
             {lastUris.map((uri) => (
               <View key={uri} style={styles.viewerItem}>
                 <Text style={styles.viewerLabel}>{describeCapture(uri)}</Text>
-                {!uri.endsWith('.mov') ? (
+                {uri.endsWith('.mov') ? (
+                  // Une vidéo ne s'affiche pas ici : plutôt qu'un rectangle
+                  // noir, on dit où elle est partie.
+                  <View style={[styles.viewerImage, styles.viewerVideo]}>
+                    <SymbolView name="play.rectangle.fill" size={44} tintColor="#6f6f6f" />
+                    <Text style={styles.viewerHint}>Ouvre-la dans Photos pour la regarder.</Text>
+                  </View>
+                ) : (
                   <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
-                ) : null}
+                )}
               </View>
             ))}
             <Text style={styles.viewerHint}>
@@ -2032,6 +2063,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: '#111',
   },
+  viewerVideo: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
   viewerHint: {
     color: '#6f6f6f',
     fontSize: 12,
@@ -2045,6 +2081,28 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: 'rgba(170, 15, 0, 0.4)',
+  },
+  crashCard: {
+    backgroundColor: 'rgba(60, 10, 10, 0.95)',
+    borderRadius: 12,
+    padding: 12,
+    borderLeftWidth: 2,
+    borderLeftColor: '#ff453a',
+    gap: 6,
+  },
+  crashTitle: {
+    color: '#ff453a',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  crashScroll: {
+    maxHeight: 160,
+  },
+  crashText: {
+    color: '#e8e8e8',
+    fontSize: 10,
+    lineHeight: 14,
   },
   codeBanner: {
     alignSelf: 'center',

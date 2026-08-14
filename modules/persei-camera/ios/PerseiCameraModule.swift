@@ -200,6 +200,11 @@ public class PerseiCameraModule: Module {
       return mode
     }
 
+    /// Trace du dernier plantage, lue une seule fois au démarrage.
+    AsyncFunction("consumeLastCrash") { () -> String? in
+      CrashLog.consume()
+    }
+
     AsyncFunction("setVideoMode") { (enabled: Bool, promise: Promise) in
       CameraEngine.shared.setVideoMode(enabled) { result in
         switch result {

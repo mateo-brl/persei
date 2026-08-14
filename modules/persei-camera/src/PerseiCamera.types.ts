@@ -136,8 +136,12 @@ export type PerseiCameraEvents = {
   onRecordingProgress(progress: RecordingProgress): void;
   /** L'enregistrement s'est arrêté sans que l'app le demande. */
   onRecordingStopped(payload: RecordingStopped): void;
-  /** Le téléphone chauffe : « serious » avertit, « critical » a coupé. */
-  onSystemPressure(payload: { level: string }): void;
+  /**
+   * État du matériel : « serious » avertit d'une surchauffe, « critical » a
+   * coupé l'enregistrement, « sessionError » signale une erreur de session
+   * (le message porte le code).
+   */
+  onSystemPressure(payload: { level: string; message?: string }): void;
   /** Code QR ou code-barres lu dans la préview. */
   onCodeDetected(payload: { value: string; type: string }): void;
 };
