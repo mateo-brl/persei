@@ -15,18 +15,47 @@ if [ -z "$app" ]; then
 fi
 echo "Application : $app"
 
-modele=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys; t=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x['name']]; print(t[-1])")
-systeme=$(xcrun simctl list runtimes -j | python3 -c "import json,sys; r=[x['identifier'] for x in json.load(sys.stdin)['runtimes'] if x['isAvailable'] and 'iOS' in x['name']]; print(r[-1])")
-echo "Simulateur : $modele sur $systeme"
+# On prend un simulateur déjà présent sur la machine : le plus récent iPhone
+# sur le plus récent iOS. Créer un modèle au hasard donne des paires
+# incompatibles (un iPhone 6s ne tourne pas sous iOS 26).
+udid=$(xcrun simctl list devices available -j | python3 - <<'PYTHON'
+import json
+import re
+import sys
 
-udid=$(xcrun simctl create persei-demarrage "$modele" "$systeme")
+appareils = json.load(sys.stdin)["devices"]
+meilleur = None
+cle_max = (-1, -1)
+
+for systeme, liste in appareils.items():
+    version = re.search(r"iOS-(\d+)-(\d+)", systeme)
+    if not version:
+        continue
+    for appareil in liste:
+        if not appareil.get("isAvailable"):
+            continue
+        modele = re.search(r"iPhone (\d+)", appareil["name"])
+        if not modele:
+            continue
+        cle = (int(version.group(1)) * 100 + int(version.group(2)), int(modele.group(1)))
+        if cle > cle_max:
+            cle_max = cle
+            meilleur = (appareil["udid"], appareil["name"], systeme)
+
+if not meilleur:
+    sys.exit("aucun simulateur iPhone disponible")
+print(meilleur[0])
+print(f"Simulateur : {meilleur[1]} sur {meilleur[2]}", file=sys.stderr)
+PYTHON
+)
+
+echo "Identifiant du simulateur : $udid"
 nettoyer() {
   xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
-  xcrun simctl delete "$udid" >/dev/null 2>&1 || true
 }
 trap nettoyer EXIT
 
-xcrun simctl boot "$udid"
+xcrun simctl boot "$udid" || true
 xcrun simctl install "$udid" "$app"
 
 # `launch` rend le pid du processus hôte : disparu vingt secondes plus tard,
@@ -38,8 +67,7 @@ sleep 20
 
 if ! ps -p "$pid" >/dev/null 2>&1; then
   echo "::error::l'app ne survit pas à son lancement (processus $pid disparu)"
-  rapport=$(ls -t "$HOME"/Library/Logs/DiagnosticReports/* 2>/dev/null | head -3 || true)
-  for fichier in $rapport; do
+  for fichier in $(ls -t "$HOME"/Library/Logs/DiagnosticReports/* 2>/dev/null | head -3); do
     echo "--- $fichier"
     head -60 "$fichier"
   done

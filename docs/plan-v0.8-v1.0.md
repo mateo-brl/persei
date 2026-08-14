@@ -134,10 +134,14 @@ dans la liste du bouton Camera Control.
 
 Ordre imposé par le risque, pas par la valeur :
 
-1. **Canari** : ajouter uniquement un bouton de Centre de contrôle (extension
-   widget) et vérifier que l'app se lance encore. Une régression connue du
-   plugin d'extensions casse le démarrage sur React Native récent. Une
-   demi-journée qui décide de la suite.
+1. **Canari** (fait le 14 août 2026) : deux boutons de Centre de contrôle dans
+   une cible WidgetKit, plus les raccourcis Siri dans la cible de l'app. Le
+   démarrage de l'app est désormais vérifié en CI dans un simulateur, ce qui
+   teste précisément la régression connue du plugin d'extensions sur React
+   Native récent. Reste à vérifier au premier build : la création automatique
+   de l'identifiant `com.mateobaril.persei.control` par EAS en mode non
+   interactif. Si elle échoue, il faudra une session `eas credentials` avec le
+   compte Apple.
 2. **Extension LockedCameraCapture** si le canari passe. Cible ExtensionKit,
    `EXExtensionPointIdentifier` à `com.apple.securecapture`, iOS 18 minimum,
    interface SwiftUI dédiée (pas de React Native dedans). Le moteur caméra est
