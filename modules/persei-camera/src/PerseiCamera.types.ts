@@ -69,7 +69,9 @@ export type VideoStabilization =
   | 'auto'
   | 'standard'
   | 'cinematic'
-  | 'cinematicExtended';
+  | 'cinematicExtended'
+  /** iOS 26 : recadre sans ajouter de latence. */
+  | 'lowLatency';
 
 export interface VideoSettings {
   /** Hauteur de l'image : 2160 (4K), 1080, 720. */
@@ -79,6 +81,12 @@ export interface VideoSettings {
   codec: VideoCodec;
   stabilization: VideoStabilization;
   audioEnabled: boolean;
+  /** Réduction du bruit du vent (iOS 18), exige l'audio multicanal. */
+  windNoiseRemoval: boolean;
+  /** Flou d'arrière-plan cinématique (iOS 26). */
+  cinematic: boolean;
+  /** Ouverture simulée en cinématique ; 0 laisse la valeur par défaut. */
+  simulatedAperture: number;
 }
 
 export interface VideoCapabilities {
@@ -96,6 +104,12 @@ export interface VideoCapabilities {
   isRecording: boolean;
   /** Espace libre au moment de la lecture, en octets. */
   freeBytes: number;
+  supportsCinematic: boolean;
+  /** Cadences autorisées en cinématique, par hauteur. */
+  cinematicFrameRates: Record<string, number[]>;
+  /** [minimum, maximum, défaut] de l'ouverture simulée, vide si indisponible. */
+  apertureRange: number[];
+  isCinematic: boolean;
 }
 
 export interface RecordingProgress {

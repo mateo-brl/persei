@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { VideoCapabilities, VideoSettings } from '../../../modules/persei-camera';
 import {
+  apertureStops,
   bytesPerSecond,
   clampVideoSettings,
   DEFAULT_VIDEO,
@@ -25,6 +26,10 @@ const proCaps: VideoCapabilities = {
   hasMicrophone: true,
   isRecording: false,
   freeBytes: 64_000_000_000,
+  supportsCinematic: true,
+  cinematicFrameRates: { '2160': [24, 25, 30], '1080': [24, 25, 30] },
+  apertureRange: [2.0, 16.0, 2.8],
+  isCinematic: false,
 };
 
 /** Appareil d'entrée de gamme : 1080p seulement, ni Log ni ProRes. */
@@ -39,6 +44,10 @@ const basicCaps: VideoCapabilities = {
   hasMicrophone: true,
   isRecording: false,
   freeBytes: 64_000_000_000,
+  supportsCinematic: false,
+  cinematicFrameRates: {},
+  apertureRange: [],
+  isCinematic: false,
 };
 
 const pro4K120: VideoSettings = {
@@ -48,6 +57,9 @@ const pro4K120: VideoSettings = {
   codec: 'prores',
   stabilization: 'cinematicExtended',
   audioEnabled: true,
+  windNoiseRemoval: true,
+  cinematic: false,
+  simulatedAperture: 0,
 };
 
 test('un réglage supporté passe sans être touché', () => {
@@ -126,4 +138,65 @@ test('les échecs vidéo connus sont expliqués sans perdre leur code', () => {
   assert.match(manqueEspace, /P40/, 'le code doit rester lisible pour le débogage');
   assert.match(explainVideoError('P45: no format'), /résolution/);
   assert.equal(explainVideoError('boum inconnu'), 'boum inconnu');
+});
+
+/**
+ * Le flou cinématique ne vit que sur des formats dédiés : 30 images/s au
+ * plus, ni ProRes ni Log. Proposer autre chose ferait échouer la
+ * configuration au moment d'appuyer.
+ */
+test('le mode cinéma ramène les réglages dans ses limites', () => {
+  const demande: VideoSettings = {
+    ...DEFAULT_VIDEO,
+    height: 2160,
+    frameRate: 120,
+    range: 'log',
+    codec: 'prores',
+    cinematic: true,
+  };
+  const resultat = clampVideoSettings(demande, proCaps);
+  assert.equal(resultat.cinematic, true);
+  assert.equal(resultat.frameRate, 30, 'le cinéma plafonne à 30 images/s');
+  assert.equal(resultat.codec, 'hevc');
+  assert.equal(resultat.range, 'hdr', 'le Log n a pas de sens avec un flou calculé');
+  assert.equal(resultat.simulatedAperture, 2.8, 'ouverture par défaut du format');
+});
+
+test('sans matériel compatible le cinéma reste éteint', () => {
+  const resultat = clampVideoSettings({ ...DEFAULT_VIDEO, cinematic: true }, basicCaps);
+  assert.equal(resultat.cinematic, false);
+  assert.equal(resultat.simulatedAperture, 0);
+});
+
+test('l ouverture demandée reste dans les bornes du format', () => {
+  const bas = clampVideoSettings(
+    { ...DEFAULT_VIDEO, cinematic: true, simulatedAperture: 0.5 },
+    proCaps
+  );
+  assert.equal(bas.simulatedAperture, 2);
+  const haut = clampVideoSettings(
+    { ...DEFAULT_VIDEO, cinematic: true, simulatedAperture: 40 },
+    proCaps
+  );
+  assert.equal(haut.simulatedAperture, 16);
+});
+
+test('les cadences cinéma viennent de leur propre liste', () => {
+  assert.deepEqual(frameRatesFor(proCaps, 2160, true), [24, 25, 30]);
+  assert.deepEqual(frameRatesFor(basicCaps, 1080, true), []);
+});
+
+test('l étiquette annonce le cinéma et son ouverture', () => {
+  assert.match(
+    describeVideoMode({ ...DEFAULT_VIDEO, cinematic: true, simulatedAperture: 2.8 }),
+    /Cinéma f\/2\.8/
+  );
+});
+
+test('les ouvertures proposées tiennent dans les bornes du format', () => {
+  const stops = apertureStops(proCaps);
+  assert.ok(stops.length > 3);
+  assert.ok(stops.every((f) => f >= 2 && f <= 16));
+  assert.deepEqual(apertureStops(basicCaps), [], 'sans cinéma, aucune ouverture');
+  assert.deepEqual(apertureStops(null), []);
 });

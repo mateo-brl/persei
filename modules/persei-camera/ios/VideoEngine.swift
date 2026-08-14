@@ -21,6 +21,14 @@ final class VideoState {
   var codec = "hevc"
   var stabilization = "auto"
   var audioEnabled = true
+  /// Réduction du bruit du vent (iOS 18), exige l'audio multicanal.
+  var windNoiseRemoval = true
+  /// Zoom audio (iOS 26.4) : le champ sonore suit le zoom de l'image.
+  var audioZoom = true
+  /// Flou d'arrière-plan cinématique (iOS 26).
+  var cinematic = false
+  /// Ouverture simulée du mode cinématique ; 0 laisse la valeur par défaut.
+  var simulatedAperture: Double = 0
   var isActive = false
   var isRecording = false
   var delegate: MovieRecordingDelegate?
@@ -148,6 +156,7 @@ extension CameraEngine {
     else { return }
     session.addInput(input)
     video.audioInput = input
+    applyAudioOptionsLocked()
   }
 
   private func removeAudioInputLocked() {
@@ -165,6 +174,9 @@ extension CameraEngine {
     codec: String,
     stabilization: String,
     audioEnabled: Bool,
+    windNoiseRemoval: Bool,
+    cinematic: Bool,
+    simulatedAperture: Double,
     completion: @escaping (Result<[String: Any], Error>) -> Void
   ) {
     sessionQueue.async {
@@ -177,10 +189,21 @@ extension CameraEngine {
         height: height,
         frameRate: frameRate,
         range: VideoRange(rawValue: range) ?? .sdr,
-        wantsProRes: wantsProRes
+        wantsProRes: wantsProRes,
+        wantsCinematic: cinematic
       )
       self.video.codec = codec
       self.video.stabilization = stabilization
+      self.video.windNoiseRemoval = windNoiseRemoval
+      self.video.cinematic = cinematic
+      self.video.simulatedAperture = simulatedAperture
+
+      // Le mode cinématique impose l'autofocus continu et interdit tout
+      // réglage manuel : on rend la main au tout-auto avant de l'activer,
+      // sinon AVFoundation lève une exception au premier réglage.
+      if cinematic {
+        self.releaseManualControlsLocked()
+      }
 
       if audioEnabled != self.video.audioEnabled {
         self.video.audioEnabled = audioEnabled
@@ -249,6 +272,8 @@ extension CameraEngine {
     applyResolutionPreference(for: device)
     session.commitConfiguration()
 
+    applyCinematicLocked()
+    applyAudioOptionsLocked()
     applyStabilizationLocked()
     applyCodecLocked()
     applyRotationLocked()
@@ -280,6 +305,10 @@ extension CameraEngine {
     if #available(iOS 17.0, *) {
       supportsLog = format.supportedColorSpaces.contains(.appleLog)
     }
+    var supportsCinematic = false
+    if #available(iOS 26.0, *) {
+      supportsCinematic = format.isCinematicVideoCaptureSupported
+    }
     return VideoFormatSpec(
       width: Int(dimensions.width),
       height: Int(dimensions.height),
@@ -291,8 +320,62 @@ extension CameraEngine {
       supportsAppleLog: supportsLog,
       supportsHlg: format.supportedColorSpaces.contains(.HLG_BT2020),
       isBinned: format.isVideoBinned,
-      maxPhotoWidth: Int(format.supportedMaxPhotoDimensions.last?.width ?? 0)
+      maxPhotoWidth: Int(format.supportedMaxPhotoDimensions.last?.width ?? 0),
+      supportsCinematic: supportsCinematic
     )
+  }
+
+  /// Flou d'arrière-plan cinématique (iOS 26). Le mode vit sur l'entrée, pas
+  /// sur la sortie, et impose ses conditions : autofocus continu obligatoire,
+  /// types de métadonnées imposés, ouverture fixée dans les bornes du format.
+  /// Sortir de ces clous lève une exception, donc chaque étape est gardée.
+  private func applyCinematicLocked() {
+    guard #available(iOS 26.0, *), let input = videoInput else { return }
+    let format = input.device.activeFormat
+    let voulu = video.cinematic && input.isCinematicVideoCaptureSupported
+      && format.isCinematicVideoCaptureSupported
+
+    if input.isCinematicVideoCaptureEnabled != voulu {
+      input.isCinematicVideoCaptureEnabled = voulu
+    }
+    guard voulu else {
+      restoreCodeScanningLocked()
+      return
+    }
+
+    // Le mode exige exactement ces types de métadonnées : la lecture des
+    // codes QR laisse la place le temps du cinématique.
+    metadataOutput.metadataObjectTypes =
+      metadataOutput.requiredMetadataObjectTypesForCinematicVideoCapture
+
+    let minimum = format.minSimulatedAperture
+    let maximum = format.maxSimulatedAperture
+    if minimum > 0, maximum >= minimum {
+      let demande = video.simulatedAperture > 0
+        ? Float(video.simulatedAperture)
+        : format.defaultSimulatedAperture
+      input.simulatedAperture = min(max(demande, minimum), maximum)
+    }
+  }
+
+  /// Micro : stéréo quand le matériel sait le faire (c'est ce que fait l'app
+  /// Camera), réduction du bruit du vent — qui exige justement le multicanal —
+  /// et zoom audio suivant le zoom de l'image.
+  private func applyAudioOptionsLocked() {
+    guard let audio = video.audioInput else { return }
+    if #available(iOS 18.0, *) {
+      if audio.isMultichannelAudioModeSupported(.stereo) {
+        audio.multichannelAudioMode = .stereo
+      }
+      if audio.isWindNoiseRemovalSupported {
+        audio.isWindNoiseRemovalEnabled = video.windNoiseRemoval
+      }
+    }
+    if #available(iOS 26.4, *) {
+      if audio.isAudioZoomSupported {
+        audio.isAudioZoomEnabled = video.audioZoom
+      }
+    }
   }
 
   private func applyStabilizationLocked() {
@@ -308,6 +391,12 @@ extension CameraEngine {
         wanted = .cinematicExtendedEnhanced
       } else {
         wanted = .cinematicExtended
+      }
+    case "lowLatency":
+      if #available(iOS 26.0, *), format.isVideoStabilizationModeSupported(.lowLatency) {
+        wanted = .lowLatency
+      } else {
+        wanted = .standard
       }
     default: wanted = .auto
     }
@@ -534,6 +623,18 @@ extension CameraEngine {
 
   // MARK: - Capacités
 
+  /// Bornes d'ouverture simulée du format actif, vides hors cinématique.
+  private func apertureRange(of device: AVCaptureDevice) -> [Double] {
+    guard #available(iOS 26.0, *) else { return [] }
+    let format = device.activeFormat
+    guard format.isCinematicVideoCaptureSupported, format.minSimulatedAperture > 0 else { return [] }
+    return [
+      Double(format.minSimulatedAperture),
+      Double(format.maxSimulatedAperture),
+      Double(format.defaultSimulatedAperture),
+    ]
+  }
+
   func videoCapabilities() -> [String: Any] {
     guard let device else { return [:] }
     let specs = device.formats.map(videoSpec(of:))
@@ -550,6 +651,9 @@ extension CameraEngine {
     if format.isVideoStabilizationModeSupported(.cinematicExtended) {
       stabilizations.append("cinematicExtended")
     }
+    if #available(iOS 26.0, *), format.isVideoStabilizationModeSupported(.lowLatency) {
+      stabilizations.append("lowLatency")
+    }
 
     var supportsPause = false
     if #available(iOS 18.0, *) { supportsPause = true }
@@ -565,6 +669,14 @@ extension CameraEngine {
       "hasMicrophone": AVCaptureDevice.default(for: .audio) != nil,
       "isRecording": video.isRecording,
       "freeBytes": Double(freeDiskBytes() ?? 0),
+      "supportsCinematic": specs.contains(where: \.supportsCinematic),
+      "cinematicFrameRates": Dictionary(
+        uniqueKeysWithValues: heights.map { hauteur in
+          ("\(hauteur)", CameraMath.cinematicFrameRates(specs, height: hauteur))
+        }
+      ),
+      "apertureRange": apertureRange(of: device),
+      "isCinematic": cinematicActive,
     ]
   }
 }
