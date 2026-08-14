@@ -59,9 +59,13 @@ final class FrameStacker {
     if decoded == nil {
       decoded = CIImage(data: data, options: [.applyOrientationProperty: true])
     }
-    // Pas de rendu intermédiaire : l'accumulateur (RGBAh) évalue le graphe
-    // RAW en demi-flottants — un CGImage 8 bits ici perdrait le linéaire.
     guard var frame = decoded else { return }
+    // Fige la trame décodée en buffer demi-flottants : sans ça, le graphe
+    // CIRAWFilter (très coûteux) est réévalué à chaque composition et par
+    // l'alignement — la pose durait le double de la consigne.
+    if stackedLinearRaw, let materialized = materialize(frame) {
+      frame = materialized
+    }
 
     if alignEnabled {
       if let reference = referenceFrame {
@@ -107,6 +111,31 @@ final class FrameStacker {
         maxFrameCount = 1
       }
     }
+  }
+
+  /// Rend l'image dans un CVPixelBuffer 64RGBAHalf : le graphe amont n'est
+  /// évalué qu'une fois, la précision linéaire est conservée.
+  private func materialize(_ image: CIImage) -> CIImage? {
+    let width = Int(image.extent.width.rounded())
+    let height = Int(image.extent.height.rounded())
+    guard width > 0, height > 0 else { return nil }
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+      kCFAllocatorDefault,
+      width,
+      height,
+      kCVPixelFormatType_64RGBAHalf,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+      &pixelBuffer
+    )
+    guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return nil }
+    ciContext.render(
+      image.transformed(by: CGAffineTransform(translationX: -image.extent.origin.x, y: -image.extent.origin.y)),
+      to: buffer,
+      bounds: CGRect(x: 0, y: 0, width: width, height: height),
+      colorSpace: nil
+    )
+    return CIImage(cvPixelBuffer: buffer)
   }
 
   /// Translation qui aligne `frame` sur `reference`, estimée en résolution

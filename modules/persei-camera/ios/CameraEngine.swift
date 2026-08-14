@@ -816,6 +816,8 @@ final class CameraEngine: NSObject {
     // empilé au lieu de déclencher sur une connexion inactive (NSException).
     let elapsed = Date().timeIntervalSince(poseStartDate)
     if elapsed >= totalSeconds || stackCancelled || !session.isRunning || session.isInterrupted {
+      // Marqueur « assemblage » : frame == total, le JS affiche la bonne phase.
+      onLongExposureProgress?(["frame": Int(totalSeconds), "total": Int(totalSeconds)])
       finishStack(stacker: stacker, completion: completion)
       return
     }
