@@ -189,6 +189,23 @@ final class CameraEngine: NSObject {
 
     session.commitConfiguration()
     startObserving(newDevice)
+
+    // Démarrage sur le 1× (capteur principal, le meilleur) plutôt que sur le
+    // 0,5× de l'ultra grand-angle où le device virtuel démarre par défaut.
+    if newDevice.position == .back, !newDevice.constituentDevices.isEmpty {
+      let switchOvers = newDevice.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+      if let wideZoom = switchOvers.first {
+        do {
+          try newDevice.lockForConfiguration()
+          defer { newDevice.unlockForConfiguration() }
+          newDevice.videoZoomFactor = min(
+            max(wideZoom, newDevice.minAvailableVideoZoomFactor),
+            newDevice.maxAvailableVideoZoomFactor
+          )
+        } catch {}
+      }
+    }
+
     return capabilities(of: newDevice)
   }
 
@@ -718,6 +735,9 @@ final class CameraEngine: NSObject {
   /// (le maximum matériel), empilées en moyenne (« lueur », nuit propre) et/ou
   /// en fusion max (« étoiles », garde les traînées de météores).
   private var poseStartDate = Date.distantPast
+  /// Pose de nuit : trames RAW Bayer (linéaires, sans réduction de bruit qui
+  /// mange les étoiles faibles) plutôt que HEIC 8 bits déjà traité.
+  private var poseUsesRaw = false
 
   /// `manualExposure` : de nuit (réglages manuels), chaque trame est une vraie
   /// pose de ~1 s sur la caméra physique. De jour (exposition auto), on empile
@@ -777,6 +797,7 @@ final class CameraEngine: NSObject {
         }
       }
 
+      self.poseUsesRaw = manualExposure && !self.photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
       self.poseStartDate = Date()
       let stacker = FrameStacker(mode: mode, align: align, meteorFilter: meteorFilter)
       self.captureStackFrame(totalSeconds: seconds, stacker: stacker, completion: completion)
@@ -800,7 +821,16 @@ final class CameraEngine: NSObject {
     }
 
     let settings: AVCapturePhotoSettings
-    if let format = hevcFormat() {
+    let rawTypes = photoOutput.availableRawPhotoPixelFormatTypes
+    if poseUsesRaw, !rawTypes.isEmpty {
+      // Bayer RAW de préférence (fichiers moitié moins lourds que ProRAW),
+      // en 12 MP (dimensions minimales) pour contenir la mémoire d'empilement.
+      let bayerType = rawTypes.first { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) } ?? rawTypes[0]
+      settings = AVCapturePhotoSettings(rawPixelFormatType: bayerType)
+      if let smallest = device?.activeFormat.supportedMaxPhotoDimensions.first {
+        settings.maxPhotoDimensions = smallest
+      }
+    } else if let format = hevcFormat() {
       settings = AVCapturePhotoSettings(format: format)
     } else {
       settings = AVCapturePhotoSettings()

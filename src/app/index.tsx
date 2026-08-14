@@ -54,7 +54,7 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '🌠',
     label: 'Étoiles filantes',
     description:
-      "Une minute de pose en mode Les deux. La fusion max garde les traînées, la moyenne donne un ciel propre. ISO 1600, focus sur ∞. Cale bien le téléphone et vise large.",
+      "Une minute de pose en mode Les deux. La fusion max garde les traînées, la moyenne donne un ciel propre. ISO 1600, focus sur ∞, capteur principal 1×. Cale bien le téléphone.",
     duration: 60,
     style: 'both',
     iso: 1600,
@@ -501,6 +501,9 @@ export default function CameraScreen() {
         setFocusAuto(false);
         setFocusIdx(fIdx);
         PerseiCamera.setLensPosition(FOCUS_STOPS[fIdx]).catch(() => {});
+        // Scènes de ciel : cadrer sur le capteur principal (1×), le meilleur.
+        const wide = caps?.zoomPresets.find((z) => z.factor === 1);
+        if (wide) PerseiCamera.setZoom(wide.zoom).catch(() => {});
       } else {
         setFocusAuto(true);
         PerseiCamera.setAutoFocus().catch(() => {});
@@ -508,7 +511,7 @@ export default function CameraScreen() {
       setShowPresets(false);
       setToast(`${preset.emoji} Preset « ${preset.label} » appliqué`);
     },
-    [isoStops, shutterStops]
+    [isoStops, shutterStops, caps]
   );
 
   const startPose = useCallback(async () => {
