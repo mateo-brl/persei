@@ -15,6 +15,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/ios-compile.yml'
+      - '.github/scripts/**'
   pull_request:
   workflow_call:
   workflow_dispatch:
