@@ -63,6 +63,7 @@
           "savePhotosPermission": "Persei enregistre vos photos dans votre photothèque."
         }
       ],
+      "@bacons/apple-targets",
       "./plugins/with-app-intents"
     ],
     "experiments": {

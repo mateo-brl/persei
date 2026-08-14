@@ -69,6 +69,7 @@ import {
   remainingSeconds,
 } from '../lib/video';
 import { describeCode, isOpenableUrl } from '../lib/codes';
+import { modeFromUrl } from '../lib/launch';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
 
 const ACCENT = '#ffb800';
@@ -444,6 +445,19 @@ export default function CameraScreen() {
     if (!caps) return;
     PerseiCamera.consumeLaunchMode().then(applyLaunchMode).catch(() => {});
   }, [caps, applyLaunchMode]);
+
+  // Bouton du Centre de contrôle ou de l'écran verrouillé : il ouvre l'app par
+  // une URL, la seule chose qu'une extension puisse nous transmettre sans
+  // groupe d'app partagé.
+  useEffect(() => {
+    const traiter = (url: string | null | undefined) => {
+      const mode = modeFromUrl(url);
+      if (mode) applyLaunchMode(mode);
+    };
+    Linking.getInitialURL().then(traiter).catch(() => {});
+    const sub = Linking.addEventListener('url', (event) => traiter(event.url));
+    return () => sub.remove();
+  }, [applyLaunchMode]);
 
   // App déjà lancée : le raccourci écrit le mode puis nous ramène au premier plan.
   useEffect(() => {
