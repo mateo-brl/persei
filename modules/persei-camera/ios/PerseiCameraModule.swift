@@ -15,9 +15,15 @@ struct VideoOptions: Record {
   @Field var range: String = "sdr"
   /// « hevc », « h264 » ou « prores ».
   @Field var codec: String = "hevc"
-  /// « off », « standard », « cinematic », « cinematicExtended », « auto ».
+  /// « off », « standard », « cinematic », « cinematicExtended »,
+  /// « lowLatency », « auto ».
   @Field var stabilization: String = "auto"
   @Field var audioEnabled: Bool = true
+  @Field var windNoiseRemoval: Bool = true
+  /// Flou d'arrière-plan cinématique (iOS 26).
+  @Field var cinematic: Bool = false
+  /// Ouverture simulée ; 0 laisse la valeur par défaut du format.
+  @Field var simulatedAperture: Double = 0
 }
 
 public class PerseiCameraModule: Module {
@@ -212,7 +218,10 @@ public class PerseiCameraModule: Module {
         range: options.range,
         codec: options.codec,
         stabilization: options.stabilization,
-        audioEnabled: options.audioEnabled
+        audioEnabled: options.audioEnabled,
+        windNoiseRemoval: options.windNoiseRemoval,
+        cinematic: options.cinematic,
+        simulatedAperture: options.simulatedAperture
       ) { result in
         switch result {
         case .success(let capabilities):

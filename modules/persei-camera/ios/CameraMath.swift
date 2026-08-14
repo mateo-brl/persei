@@ -202,6 +202,8 @@ struct VideoFormatSpec {
   let isBinned: Bool
   /// Largeur de photo maximale offerte pendant la vidéo.
   let maxPhotoWidth: Int
+  /// Flou d'arrière-plan cinématique (iOS 26), réservé à certains formats.
+  let supportsCinematic: Bool
 
   init(
     width: Int,
@@ -212,7 +214,8 @@ struct VideoFormatSpec {
     supportsAppleLog: Bool = false,
     supportsHlg: Bool = false,
     isBinned: Bool = false,
-    maxPhotoWidth: Int = 0
+    maxPhotoWidth: Int = 0,
+    supportsCinematic: Bool = false
   ) {
     self.width = width
     self.height = height
@@ -223,6 +226,7 @@ struct VideoFormatSpec {
     self.supportsHlg = supportsHlg
     self.isBinned = isBinned
     self.maxPhotoWidth = maxPhotoWidth
+    self.supportsCinematic = supportsCinematic
   }
 
   var maxFrameRate: Double { frameRateRanges.map(\.max).max() ?? 0 }
@@ -235,6 +239,22 @@ struct VideoRequest: Equatable {
   let frameRate: Double
   let range: VideoRange
   let wantsProRes: Bool
+  /// Flou d'arrière-plan cinématique : format dédié, 30 images/s au plus.
+  let wantsCinematic: Bool
+
+  init(
+    height: Int,
+    frameRate: Double,
+    range: VideoRange,
+    wantsProRes: Bool,
+    wantsCinematic: Bool = false
+  ) {
+    self.height = height
+    self.frameRate = frameRate
+    self.range = range
+    self.wantsProRes = wantsProRes
+    self.wantsCinematic = wantsCinematic
+  }
 }
 
 extension CameraMath {
@@ -251,6 +271,7 @@ extension CameraMath {
       else { continue }
 
       if request.wantsProRes != format.isProResSource { continue }
+      if request.wantsCinematic && !format.supportsCinematic { continue }
       if request.range == .log && !format.supportsAppleLog { continue }
       if request.range == .hdr && !(format.isTenBit && format.supportsHlg) { continue }
 
@@ -272,6 +293,16 @@ extension CameraMath {
     }
 
     return best?.index
+  }
+
+  /// Cadences proposables en cinématique : Apple limite ce mode à 30 images/s.
+  static func cinematicFrameRates(
+    _ formats: [VideoFormatSpec],
+    height: Int
+  ) -> [Double] {
+    [24.0, 25.0, 30.0].filter { rate in
+      formats.contains { $0.supportsCinematic && $0.height == height && $0.supports(frameRate: rate) }
+    }
   }
 
   /// Cadences réellement proposables pour une hauteur donnée, dans l'ordre.

@@ -49,6 +49,12 @@ export const HELP_TEXTS: Record<string, string> = {
     "HEVC est le format normal, léger et lisible partout. ProRes garde bien plus de détails pour le montage, au prix d'environ six gigaoctets par minute en 4K. Réserve-le aux plans que tu vas vraiment retravailler.",
   stabilization:
     "Compense les tremblements en recadrant légèrement l'image. Auto laisse l'iPhone choisir. Max stabilise le plus fort et te fait perdre un peu de champ, pratique en marchant. Off garde tout le cadre, à réserver au trépied.",
+  cinematic:
+    "Floute l'arrière-plan pendant la vidéo, comme le mode Cinématique d'Apple. L'iPhone suit le sujet et fait la mise au point tout seul : les réglages manuels sont indisponibles tant que le mode est actif, et la cadence plafonne à 30 images par seconde.",
+  aperture:
+    "Intensité du flou en mode Cinéma, exprimée comme une ouverture d'objectif. Un petit nombre (f/2) sépare fortement le sujet du fond, un grand nombre (f/8) garde presque tout net.",
+  windNoise:
+    "Atténue le souffle du vent dans le micro. Utile dehors ; sans effet si tu branches un micro externe.",
   videoAudio:
     "Enregistre le son avec l'image. En muet, la vidéo est plus légère et tu évites les bruits de vent ou de manipulation quand tu comptes ajouter une musique ensuite.",
   autoNight:

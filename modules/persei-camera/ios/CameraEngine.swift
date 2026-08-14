@@ -29,7 +29,7 @@ final class CameraEngine: NSObject {
   // All session/device mutations happen on this queue.
   let sessionQueue = DispatchQueue(label: "app.persei.camera.session")
   private(set) var device: AVCaptureDevice?
-  private var videoInput: AVCaptureDeviceInput?
+  private(set) var videoInput: AVCaptureDeviceInput?
   private let photoOutput = AVCapturePhotoOutput()
 
   // MARK: Vidéo (voir VideoEngine.swift)
@@ -61,7 +61,7 @@ final class CameraEngine: NSObject {
   private let videoDataOutput = AVCaptureVideoDataOutput()
   private let processingQueue = DispatchQueue(label: "app.persei.camera.processing")
   /// Lecture des codes (QR, codes-barres) dans la préview, comme l'app Camera.
-  private let metadataOutput = AVCaptureMetadataOutput()
+  let metadataOutput = AVCaptureMetadataOutput()
   private var lastCodeValue: String?
   private var lastCodeDate = Date.distantPast
   /// Code détecté : { value, type }.
@@ -218,16 +218,7 @@ final class CameraEngine: NSObject {
       session.addOutput(metadataOutput)
       metadataOutput.setMetadataObjectsDelegate(self, queue: processingQueue)
     }
-    if session.outputs.contains(metadataOutput) {
-      // Les types disponibles dépendent de la session : les demander avant de
-      // l'avoir configurée lève une exception.
-      let wanted: [AVMetadataObject.ObjectType] = [
-        .qr, .aztec, .dataMatrix, .pdf417, .ean13, .ean8, .code128, .code39, .upce,
-      ]
-      metadataOutput.metadataObjectTypes = wanted.filter {
-        metadataOutput.availableMetadataObjectTypes.contains($0)
-      }
-    }
+    restoreCodeScanningLocked()
 
     // Frames en portrait pour que les calques d'aide collent à la préview.
     if let connection = videoDataOutput.connection(with: .video) {
@@ -427,9 +418,9 @@ final class CameraEngine: NSObject {
   // l'exposition custom, ni lensPosition, ni les gains de balance des blancs.
   // Chaque réglage manuel bascule donc sur le physique ; on ne rend le
   // virtuel que quand TOUT est repassé en auto.
-  private var manualExposureActive = false
-  private var manualFocusActive = false
-  private var manualWbActive = false
+  var manualExposureActive = false
+  var manualFocusActive = false
+  var manualWbActive = false
   private var anyManualActive: Bool {
     manualExposureActive || manualFocusActive || manualWbActive
   }
@@ -465,7 +456,7 @@ final class CameraEngine: NSObject {
   }
 
   /// À appeler sur la sessionQueue. Restaure le device virtuel et son zoom.
-  private func restoreVirtualLocked() {
+  func restoreVirtualLocked() {
     guard !video.isRecording else { return }
     guard let current = device, current.constituentDevices.isEmpty,
           current.position == .back,
@@ -562,6 +553,7 @@ final class CameraEngine: NSObject {
   }
 
   func setManualExposure(iso: Double, shutterSeconds: Double) throws {
+    guard !cinematicActive else { return }
     guard iso.isFinite, shutterSeconds.isFinite else { return }
     sessionQueue.sync {
       // L'exposition .custom n'existe pas sur le device virtuel : bascule
@@ -613,6 +605,7 @@ final class CameraEngine: NSObject {
   }
 
   func setLensPosition(_ position: Double) throws {
+    guard !cinematicActive else { return }
     guard position.isFinite else { return }
     sessionQueue.sync {
       // lensPosition non supporté sur le device virtuel : physique requis.
@@ -648,6 +641,7 @@ final class CameraEngine: NSObject {
   }
 
   func setWhiteBalance(kelvin: Double, tint: Double) throws {
+    guard !cinematicActive else { return }
     guard kelvin.isFinite, tint.isFinite else { return }
     sessionQueue.sync {
       // Les gains de BdB verrouillés ne sont pas supportés sur le device
@@ -814,6 +808,50 @@ final class CameraEngine: NSObject {
     processingQueue.async {
       self.processor.loupeEnabled = enabled
     }
+  }
+
+  /// Types de codes lus dans la préview. Les types disponibles dépendent de la
+  /// session : les demander avant de l'avoir configurée lève une exception.
+  func restoreCodeScanningLocked() {
+    guard session.outputs.contains(metadataOutput) else { return }
+    let voulus: [AVMetadataObject.ObjectType] = [
+      .qr, .aztec, .dataMatrix, .pdf417, .ean13, .ean8, .code128, .code39, .upce,
+    ]
+    metadataOutput.metadataObjectTypes = voulus.filter {
+      metadataOutput.availableMetadataObjectTypes.contains($0)
+    }
+  }
+
+  /// Rend tous les réglages à l'automatique et repasse sur le device virtuel.
+  /// Le mode cinématique l'exige : il interdit le focus manuel et vit sur la
+  /// caméra virtuelle, alors qu'un réglage manuel force la caméra physique.
+  func releaseManualControlsLocked() {
+    manualExposureActive = false
+    manualFocusActive = false
+    manualWbActive = false
+    if let device {
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+          device.exposureMode = .continuousAutoExposure
+        }
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+          device.focusMode = .continuousAutoFocus
+        }
+        if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+          device.whiteBalanceMode = .continuousAutoWhiteBalance
+        }
+      } catch {}
+    }
+    restoreVirtualLocked()
+  }
+
+  /// Vrai quand le flou cinématique est actif : tout réglage manuel est alors
+  /// refusé par AVFoundation, on ne le tente même pas.
+  var cinematicActive: Bool {
+    guard #available(iOS 26.0, *), let videoInput else { return false }
+    return videoInput.isCinematicVideoCaptureEnabled
   }
 
   /// Ajouter la sortie vidéo désactive Live Photo et peut désactiver la

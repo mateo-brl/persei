@@ -60,6 +60,7 @@ import {
   WB_STOPS,
 } from '../lib/scales';
 import {
+  apertureStops,
   clampVideoSettings,
   DEFAULT_VIDEO,
   describeVideoMode,
@@ -619,6 +620,14 @@ export default function CameraScreen() {
     (patch: Partial<VideoSettings>) => {
       const next = clampVideoSettings({ ...videoSettingsRef.current, ...patch }, videoCaps);
       setVideoSettings(next);
+      // Le flou cinématique interdit tout réglage manuel côté matériel : on
+      // remet l'écran en accord avec ce que la caméra va faire.
+      if (next.cinematic) {
+        setExposureAuto(true);
+        setFocusAuto(true);
+        setWbAuto(true);
+        setActiveParam(null);
+      }
       PerseiCamera.configureVideo(next).catch((e) => setToast(explainVideoError(formatError(e))));
     },
     [videoCaps]
@@ -1184,7 +1193,14 @@ export default function CameraScreen() {
             </View>
           ) : null}
 
-          <ChipsRow
+          {captureMode === 'video' && videoSettings.cinematic ? (
+            <View style={styles.toast}>
+              <Text style={styles.toastText}>
+                Cinéma : la mise au point et l’exposition sont pilotées par l’iPhone.
+              </Text>
+            </View>
+          ) : (
+            <ChipsRow
             activeParam={activeParam}
             openParam={openParam}
             exposureAuto={exposureAuto}
@@ -1196,7 +1212,8 @@ export default function CameraScreen() {
             focusValue={FOCUS_STOPS[focusIdx]}
             wbValue={WB_STOPS[wbIdx]}
             tintValue={TINT_STOPS[tintIdx]}
-          />
+            />
+          )}
 
           <View style={styles.shutterRow}>
             {recording && videoSettings.range !== 'log' ? (
@@ -1362,7 +1379,7 @@ function VideoBar({
   onChange(patch: Partial<VideoSettings>): void;
 }) {
   const heights = caps?.heights ?? [settings.height];
-  const rates = frameRatesFor(caps, settings.height);
+  const rates = frameRatesFor(caps, settings.height, settings.cinematic);
 
   const ranges: VideoRange[] = ['sdr'];
   if (caps?.supportsHdr) ranges.push('hdr');
@@ -1370,14 +1387,16 @@ function VideoBar({
   const rangeLabels: Record<VideoRange, string> = { sdr: 'Standard', hdr: 'HDR', log: 'Log' };
 
   const stabilizations = (caps?.stabilizations ?? ['auto', 'off']).filter((s) =>
-    ['auto', 'off', 'standard', 'cinematicExtended'].includes(s)
+    ['auto', 'off', 'standard', 'cinematicExtended', 'lowLatency'].includes(s)
   );
   const stabilizationLabels: Record<string, string> = {
     auto: 'Auto',
     off: 'Off',
     standard: 'Standard',
     cinematicExtended: 'Max',
+    lowLatency: 'Réactive',
   };
+  const ouvertures = apertureStops(caps);
 
   return (
     <View style={styles.poseBar}>
@@ -1435,6 +1454,27 @@ function VideoBar({
         />
       </SettingRow>
 
+      {caps?.supportsCinematic ? (
+        <SettingRow label="Cinéma (flou d’arrière-plan)" helpKey="cinematic">
+          <Segmented
+            options={['off', 'on']}
+            labels={['Off', 'On']}
+            value={settings.cinematic ? 'on' : 'off'}
+            onChange={(v) => onChange({ cinematic: v === 'on' })}
+          />
+        </SettingRow>
+      ) : null}
+
+      {settings.cinematic && ouvertures.length > 1 ? (
+        <SettingRow label={`Ouverture f/${settings.simulatedAperture}`} helpKey="aperture">
+          <RulerSlider
+            count={ouvertures.length}
+            index={Math.max(0, ouvertures.indexOf(settings.simulatedAperture))}
+            onChange={(i) => onChange({ simulatedAperture: ouvertures[i] })}
+          />
+        </SettingRow>
+      ) : null}
+
       <SettingRow label="Son" helpKey="videoAudio">
         <Segmented
           options={['on', 'off']}
@@ -1443,6 +1483,17 @@ function VideoBar({
           onChange={(v) => onChange({ audioEnabled: v === 'on' })}
         />
       </SettingRow>
+
+      {settings.audioEnabled ? (
+        <SettingRow label="Filtre anti-vent" helpKey="windNoise">
+          <Segmented
+            options={['on', 'off']}
+            labels={['On', 'Off']}
+            value={settings.windNoiseRemoval ? 'on' : 'off'}
+            onChange={(v) => onChange({ windNoiseRemoval: v === 'on' })}
+          />
+        </SettingRow>
+      ) : null}
     </View>
   );
 }

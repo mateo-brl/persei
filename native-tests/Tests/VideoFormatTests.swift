@@ -103,6 +103,30 @@ final class VideoFormatTests: XCTestCase {
     XCTAssertEqual(format?.isProResSource, false)
   }
 
+  /// Le flou cinématique vit sur des formats dédiés : sans eux, aucune
+  /// demande cinéma ne doit aboutir, et surtout pas sur un format ordinaire.
+  func testCinematicNeedsItsOwnFormat() {
+    let cinema = VideoFormatSpec(
+      width: 1920, height: 1080,
+      frameRateRanges: [FrameRateRange(min: 1, max: 30)],
+      isTenBit: true, supportsHlg: true, maxPhotoWidth: 1920, supportsCinematic: true
+    )
+    let avec = CameraMath.pickVideoFormat(
+      proFormats + [cinema],
+      request: VideoRequest(height: 1080, frameRate: 30, range: .sdr, wantsProRes: false, wantsCinematic: true)
+    )
+    XCTAssertNotNil(avec)
+
+    let sans = CameraMath.pickVideoFormat(
+      proFormats,
+      request: VideoRequest(height: 1080, frameRate: 30, range: .sdr, wantsProRes: false, wantsCinematic: true)
+    )
+    XCTAssertNil(sans, "aucun format cinématique : la demande doit échouer, pas retomber sur un autre")
+
+    XCTAssertEqual(CameraMath.cinematicFrameRates(proFormats + [cinema], height: 1080), [24, 25, 30])
+    XCTAssertEqual(CameraMath.cinematicFrameRates(proFormats, height: 2160), [])
+  }
+
   func testImpossibleRequestsReturnNothing() {
     XCTAssertNil(pick(VideoRequest(height: 4320, frameRate: 30, range: .sdr, wantsProRes: false)))
     XCTAssertNil(pick(VideoRequest(height: 2160, frameRate: 240, range: .sdr, wantsProRes: false)))

@@ -14,6 +14,9 @@ export const DEFAULT_VIDEO: VideoSettings = {
   codec: 'hevc',
   stabilization: 'auto',
   audioEnabled: true,
+  windNoiseRemoval: true,
+  cinematic: false,
+  simulatedAperture: 0,
 };
 
 function nearest(values: number[], target: number): number | null {
@@ -21,7 +24,12 @@ function nearest(values: number[], target: number): number | null {
   return values.reduce((best, v) => (Math.abs(v - target) < Math.abs(best - target) ? v : best));
 }
 
-export function frameRatesFor(caps: VideoCapabilities | null, height: number): number[] {
+export function frameRatesFor(
+  caps: VideoCapabilities | null,
+  height: number,
+  cinematic = false
+): number[] {
+  if (cinematic) return caps?.cinematicFrameRates?.[String(height)] ?? [];
   return caps?.frameRates?.[String(height)] ?? [];
 }
 
@@ -41,7 +49,11 @@ export function clampVideoSettings(
     ? settings.height
     : (nearest(caps.heights, settings.height) ?? DEFAULT_VIDEO.height);
 
-  const rates = frameRatesFor(caps, height);
+  // Le cinématique n'existe que sur des formats dédiés, plafonnés à 30
+  // images/s : proposer 120 dans ce mode serait promettre l'impossible.
+  const cinematic = settings.cinematic && caps.supportsCinematic;
+
+  const rates = frameRatesFor(caps, height, cinematic);
   const frameRate = rates.includes(settings.frameRate)
     ? settings.frameRate
     : (nearest(rates, settings.frameRate) ?? DEFAULT_VIDEO.frameRate);
@@ -59,7 +71,41 @@ export function clampVideoSettings(
 
   const audioEnabled = settings.audioEnabled && caps.hasMicrophone;
 
-  return { height, frameRate, range, codec, stabilization, audioEnabled };
+  // Le flou cinématique impose ses propres conditions : ni ProRes, ni Log.
+  const codecFinal: VideoCodec = cinematic ? 'hevc' : codec;
+  const rangeFinal: VideoRange = cinematic && range === 'log' ? 'hdr' : range;
+
+  const [minimum, maximum, defaut] = caps.apertureRange ?? [];
+  let simulatedAperture = settings.simulatedAperture;
+  if (!cinematic || minimum === undefined) {
+    simulatedAperture = 0;
+  } else if (simulatedAperture <= 0) {
+    simulatedAperture = defaut ?? minimum;
+  } else {
+    simulatedAperture = Math.min(Math.max(simulatedAperture, minimum), maximum ?? minimum);
+  }
+
+  return {
+    height,
+    frameRate,
+    range: rangeFinal,
+    codec: codecFinal,
+    stabilization,
+    audioEnabled,
+    windNoiseRemoval: settings.windNoiseRemoval,
+    cinematic,
+    simulatedAperture,
+  };
+}
+
+/** Ouvertures proposées en cinématique, dans les bornes du format. */
+const OUVERTURES = [1.4, 1.8, 2, 2.2, 2.8, 3.2, 4, 4.5, 5.6, 6.3, 8, 11, 16];
+
+export function apertureStops(caps: VideoCapabilities | null): number[] {
+  const [minimum, maximum] = caps?.apertureRange ?? [];
+  if (minimum === undefined || maximum === undefined) return [];
+  const gardees = OUVERTURES.filter((f) => f >= minimum && f <= maximum);
+  return gardees.length > 0 ? gardees : [minimum, maximum];
 }
 
 /** Étiquette courte du mode courant, façon « 4K · 30 i/s · HDR ». */
@@ -69,6 +115,9 @@ export function describeVideoMode(settings: VideoSettings): string {
   if (settings.range === 'hdr') parts.push('HDR');
   if (settings.range === 'log') parts.push('Log');
   if (settings.codec === 'prores') parts.push('ProRes');
+  if (settings.cinematic) {
+    parts.push(settings.simulatedAperture > 0 ? `Cinéma f/${settings.simulatedAperture}` : 'Cinéma');
+  }
   return parts.join(' · ');
 }
 
