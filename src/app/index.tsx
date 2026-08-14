@@ -42,7 +42,8 @@ interface ScenePreset {
   description: string;
   duration: number;
   style: StackMode;
-  iso: number;
+  /** ISO manuel (trames de 1 s), ou null pour empiler des trames auto (jour). */
+  iso: number | null;
   /** Position de focus manuelle (1 = ∞), ou null pour laisser l'autofocus. */
   focus: number | null;
 }
@@ -75,10 +76,10 @@ const SCENE_PRESETS: ScenePreset[] = [
     emoji: '💧',
     label: "Filé d'eau",
     description:
-      "Dix secondes en moyenne. Cascades et vagues deviennent soyeuses. ISO au minimum pour tenir la pose en plein jour.",
+      "Dix secondes en moyenne, exposition automatique : les trames courtes s'empilent et l'eau devient soyeuse, même en plein jour.",
     duration: 10,
     style: 'mean',
-    iso: 25,
+    iso: null,
     focus: null,
   },
   {
@@ -235,6 +236,8 @@ export default function CameraScreen() {
   const [countdown, setCountdown] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [thumbUri, setThumbUri] = useState<string | null>(null);
+  const [lastUris, setLastUris] = useState<string[]>([]);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
   const liveRef = useRef<ExposureUpdate | null>(null);
@@ -482,12 +485,17 @@ export default function CameraScreen() {
       setCaptureMode('pose');
       setPoseDuration(preset.duration);
       setPoseStyle(preset.style);
-      const iIdx = nearestIndex(isoStops, preset.iso);
-      const sIdx = nearestIndex(shutterStops, 1);
-      setIsoIdx(iIdx);
-      setShutterIdx(sIdx);
-      setExposureAuto(false);
-      PerseiCamera.setManualExposure(isoStops[iIdx], shutterStops[sIdx]).catch(() => {});
+      if (preset.iso != null) {
+        const iIdx = nearestIndex(isoStops, preset.iso);
+        const sIdx = nearestIndex(shutterStops, 1);
+        setIsoIdx(iIdx);
+        setShutterIdx(sIdx);
+        setExposureAuto(false);
+        PerseiCamera.setManualExposure(isoStops[iIdx], shutterStops[sIdx]).catch(() => {});
+      } else {
+        setExposureAuto(true);
+        PerseiCamera.setAutoExposure().catch(() => {});
+      }
       if (preset.focus != null) {
         const fIdx = nearestIndex(FOCUS_STOPS, preset.focus);
         setFocusAuto(false);
@@ -514,14 +522,18 @@ export default function CameraScreen() {
         return;
       }
       // ISO de pose : la valeur manuelle si définie, sinon 1600 (ciel étoilé).
+      // Manuel (nuit) : trames de 1 s à l'ISO choisi. Auto (jour) : trames
+      // auto courtes empilées — le bon rendu pose longue en pleine lumière.
       const iso = exposureAuto ? 1600 : isoStops[isoIdx];
       const uris = await PerseiCamera.startLongExposure(
         poseDuration,
         iso,
         poseStyle,
         poseAlign,
-        poseMeteor && poseStyle !== 'mean'
+        poseMeteor && poseStyle !== 'mean',
+        !exposureAuto
       );
+      setLastUris(uris);
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
       if (uris[0]) setThumbUri(uris[0]);
       setToast('Pose enregistrée ✓');
@@ -576,6 +588,7 @@ export default function CameraScreen() {
         !useRaw && bracketEv > 0 ? [-bracketEv, 0, bracketEv] : undefined;
       const uris = await PerseiCamera.capturePhoto({ raw: useRaw, bracketStops });
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
+      setLastUris(uris);
       const heic = uris.find((u) => u.endsWith('.heic')) ?? uris[0];
       if (heic) setThumbUri(heic);
     } catch (e) {
@@ -1014,11 +1027,16 @@ export default function CameraScreen() {
           />
 
           <View style={styles.shutterRow}>
-            <View style={styles.thumbBox}>
+            <Pressable
+              style={styles.thumbBox}
+              onPress={() => {
+                if (lastUris.length) setViewerOpen(true);
+              }}
+            >
               {thumbUri ? (
                 <Image source={{ uri: thumbUri }} style={styles.thumb} contentFit="cover" />
               ) : null}
-            </View>
+            </Pressable>
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
               onPress={triggerShutter}
@@ -1046,6 +1064,34 @@ export default function CameraScreen() {
           </View>
         </View>
       </SafeAreaView>
+
+      {viewerOpen ? (
+        <Pressable style={styles.viewer} onPress={() => setViewerOpen(false)}>
+          <ScrollView contentContainerStyle={styles.viewerContent}>
+            {lastUris.map((uri) => (
+              <View key={uri} style={styles.viewerItem}>
+                <Text style={styles.viewerLabel}>
+                  {uri.includes('-lueur')
+                    ? 'Lueur (moyenne)'
+                    : uri.includes('-etoiles')
+                      ? 'Étoiles (fusion max)'
+                      : uri.endsWith('.dng')
+                        ? 'RAW'
+                        : uri.endsWith('.mov')
+                          ? 'Live Photo (vidéo)'
+                          : 'Photo'}
+                </Text>
+                {!uri.endsWith('.mov') ? (
+                  <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
+                ) : null}
+              </View>
+            ))}
+            <Text style={styles.viewerHint}>
+              Enregistrée dans Photos. Touche l'écran pour fermer.
+            </Text>
+          </ScrollView>
+        </Pressable>
+      ) : null}
 
       {nightVision ? <View pointerEvents="none" style={styles.nightOverlay} /> : null}
     </View>
@@ -1584,6 +1630,40 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 110,
     left: 12,
+  },
+  viewer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.96)',
+  },
+  viewerContent: {
+    paddingVertical: 70,
+    paddingHorizontal: 12,
+    gap: 18,
+  },
+  viewerItem: {
+    gap: 6,
+  },
+  viewerLabel: {
+    color: '#9b9b9b',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
+  viewerImage: {
+    width: '100%',
+    aspectRatio: 3 / 4,
+    borderRadius: 12,
+    backgroundColor: '#111',
+  },
+  viewerHint: {
+    color: '#6f6f6f',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 8,
   },
   nightOverlay: {
     position: 'absolute',

@@ -717,12 +717,19 @@ final class CameraEngine: NSObject {
   /// Pose longue sans plafond : capture continue de trames à ~1 s d'exposition
   /// (le maximum matériel), empilées en moyenne (« lueur », nuit propre) et/ou
   /// en fusion max (« étoiles », garde les traînées de météores).
+  private var poseStartDate = Date.distantPast
+
+  /// `manualExposure` : de nuit (réglages manuels), chaque trame est une vraie
+  /// pose de ~1 s sur la caméra physique. De jour (exposition auto), on empile
+  /// des trames auto courtes — c'est le rendu pose longue correct en pleine
+  /// lumière (filé d'eau), forcer 1 s cramerait l'image.
   func startLongExposure(
     seconds: Double,
     iso: Double,
     mode: String,
     align: Bool,
     meteorFilter: Bool,
+    manualExposure: Bool,
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
     sessionQueue.async {
@@ -739,25 +746,27 @@ final class CameraEngine: NSObject {
       self.stackCancelled = false
       self.stackFramesDone = 0
 
-      // La pose exige l'exposition .custom : bascule sur la caméra physique
-      // (le device virtuel ne la supporte pas — trames auto ultra-courtes
-      // et photos noires sinon).
-      self.ensurePhysicalForManualLocked()
-      guard let poseDevice = self.device else {
-        self.stackRunning = false
-        completion(.failure(CameraEngineError.notRunning))
-        return
-      }
-
-      let bounds = self.exposureBounds(of: poseDevice)
-      let frameDuration = min(1.0, bounds.maxSeconds)
-      if poseDevice.isExposureModeSupported(.custom) {
+      if manualExposure {
+        // L'exposition .custom exige la caméra physique (le virtuel ne la
+        // supporte pas — trames auto ultra-courtes et photos noires sinon).
+        self.ensurePhysicalForManualLocked()
+        guard let poseDevice = self.device else {
+          self.stackRunning = false
+          completion(.failure(CameraEngineError.notRunning))
+          return
+        }
+        guard poseDevice.isExposureModeSupported(.custom) else {
+          self.stackRunning = false
+          completion(.failure(CameraEngineError.captureFailed("P33: custom exposure unsupported on this camera")))
+          return
+        }
+        let bounds = self.exposureBounds(of: poseDevice)
         do {
           try poseDevice.lockForConfiguration()
           defer { poseDevice.unlockForConfiguration() }
           let clampedIso = min(max(Float(iso), bounds.minIso), bounds.maxIso)
           poseDevice.setExposureModeCustom(
-            duration: CMTime(seconds: frameDuration, preferredTimescale: 1_000_000_000),
+            duration: CMTime(seconds: min(1.0, bounds.maxSeconds), preferredTimescale: 1_000_000_000),
             iso: clampedIso,
             completionHandler: nil
           )
@@ -766,28 +775,26 @@ final class CameraEngine: NSObject {
           completion(.failure(error))
           return
         }
-      } else {
-        self.stackRunning = false
-        completion(.failure(CameraEngineError.captureFailed("P33: custom exposure unsupported on this camera")))
-        return
       }
 
-      let totalFrames = max(2, Int((seconds / frameDuration).rounded()))
+      self.poseStartDate = Date()
       let stacker = FrameStacker(mode: mode, align: align, meteorFilter: meteorFilter)
-      self.captureStackFrame(remaining: totalFrames, total: totalFrames, stacker: stacker, completion: completion)
+      self.captureStackFrame(totalSeconds: seconds, stacker: stacker, completion: completion)
     }
   }
 
   private func captureStackFrame(
-    remaining: Int,
-    total: Int,
+    totalSeconds: Double,
     stacker: FrameStacker,
     completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    // Session interrompue (appel entrant, arrière-plan) ou arrêtée : on
-    // termine proprement avec ce qui est déjà empilé au lieu de déclencher
-    // une capture sur une connexion inactive (NSException).
-    if remaining == 0 || stackCancelled || !session.isRunning || session.isInterrupted {
+    // Boucle pilotée par le temps réel écoulé : la progression affichée est
+    // honnête quelle que soit la cadence des trames (1 s en manuel de nuit,
+    // rapide en auto de jour). Session interrompue (appel entrant,
+    // arrière-plan) ou arrêtée : on termine proprement avec ce qui est déjà
+    // empilé au lieu de déclencher sur une connexion inactive (NSException).
+    let elapsed = Date().timeIntervalSince(poseStartDate)
+    if elapsed >= totalSeconds || stackCancelled || !session.isRunning || session.isInterrupted {
       finishStack(stacker: stacker, completion: completion)
       return
     }
@@ -811,10 +818,11 @@ final class CameraEngine: NSObject {
           }
           try? FileManager.default.removeItem(at: url)
           self.stackFramesDone += 1
-          self.onLongExposureProgress?(["frame": self.stackFramesDone, "total": total])
+          let elapsedNow = min(Date().timeIntervalSince(self.poseStartDate), totalSeconds)
+          self.onLongExposureProgress?(["frame": Int(elapsedNow), "total": Int(totalSeconds)])
         }
         // Frame ratée : on continue, l'empilement tolère les trous.
-        self.captureStackFrame(remaining: remaining - 1, total: total, stacker: stacker, completion: completion)
+        self.captureStackFrame(totalSeconds: totalSeconds, stacker: stacker, completion: completion)
       }
     }
     inFlightCaptures[captureId] = delegate

@@ -37,7 +37,9 @@ final class FrameStacker {
     // l'appelant juste après, et un CIImage(contentsOf:) paresseux pointerait
     // vers un fichier disparu (crash au rendu, notamment via la référence
     // d'alignement conservée entre les trames).
-    guard let data = try? Data(contentsOf: url), var frame = CIImage(data: data) else { return }
+    guard let data = try? Data(contentsOf: url),
+          var frame = CIImage(data: data, options: [.applyOrientationProperty: true])
+    else { return }
 
     if alignEnabled {
       if let reference = referenceFrame {
