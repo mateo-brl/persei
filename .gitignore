@@ -41,3 +41,5 @@ example
 # generated native folders
 /ios
 /android
+native-tests/Sources/FrameStacker.swift
+native-tests/.build/

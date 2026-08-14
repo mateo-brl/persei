@@ -1,0 +1,21 @@
+name: Tests natifs
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/persei-camera/ios/**'
+      - 'native-tests/**'
+  workflow_dispatch:
+
+concurrency: { group: native-tests, cancel-in-progress: true }
+
+jobs:
+  stacker:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copier la source testée (vérité unique dans modules/)
+        run: cp modules/persei-camera/ios/FrameStacker.swift native-tests/Sources/
+      - name: Tests du moteur d'empilement
+        run: cd native-tests && swift test
