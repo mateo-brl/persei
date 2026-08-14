@@ -44,7 +44,7 @@ niveaux de filet, du moins cher au plus cher :
 
 Règle inchangée : **on ne pose un tag de build que sur des tests verts.**
 
-## Phase 1 : socle de tests (prérequis de tout le reste)
+## Phase 1 : socle de tests (fait le 14 août 2026)
 
 Pas de nouvelle fonctionnalité, uniquement le filet. Sans ça, chaque phase
 suivante ajoute du risque sans moyen de le mesurer.
@@ -65,13 +65,36 @@ suivante ajoute du risque sans moyen de le mesurer.
 
 Sortie : aucune version utilisateur, uniquement de la CI.
 
+Fait, plus deux corrections que le filet a rendues évidentes : les réglages
+manuels sont stockés en valeur et non en index de molette (un index survivant à
+un changement de plage pointait dans le vide), et le bandeau de pose lit le
+capteur par abonnement au lieu d'une référence figée au rendu.
+
 ## Phase 2 : vidéo (le gros morceau)
 
 Découpée en trois livraisons pour que chacune soit testable seule.
 
-### 2a. Vidéo solide (v0.8.0)
+### 2a. Vidéo solide (v0.8.0, écrite le 14 août 2026)
 
 Le socle qui doit être irréprochable avant d'ajouter le moindre format exotique.
+
+Contraintes AVFoundation qui ont dicté l'architecture, vérifiées dans les
+en-têtes du SDK :
+
+- `sessionPreset` et `activeFormat` s'excluent. La vidéo passe donc par le choix
+  explicite du format ; un preset posé après coup reprend la main et donne
+  l'écran noir bien connu en 4K120.
+- Apple Log désactive la sortie photo (la connexion devient inactive). Il faudra
+  griser le déclencheur photo quand le Log est actif.
+- Live Photo est impossible tant que la sortie film est dans la session.
+- ProRes n'apparaît dans les codecs disponibles qu'avec une source 4:2:2 10 bits,
+  et il écrit environ six gigaoctets par minute en 4K.
+- Le HDR ne se demande pas : un format 10 bits en HLG BT.2020 est étiqueté Dolby
+  Vision par le téléphone lui-même.
+- `didFinishRecordingTo` passe une erreur non nulle même quand tout s'est bien
+  terminé. Seul `AVErrorRecordingSuccessfullyFinishedKey` dit la vérité.
+- Changer d'entrée coupe l'enregistrement : la bascule vers la caméra physique
+  pour les réglages manuels se fait avant de lancer, jamais pendant.
 
 - `VideoEngine` : entrée audio, `AVCaptureMovieFileOutput`, bascule propre
   photo ↔ vidéo de la session.
@@ -105,15 +128,28 @@ puis à intégrer si le coût est raisonnable.
 ## Phase 3 : intégration système (v0.9.x)
 
 Le sujet qui décide de l'usage quotidien : si l'app n'est pas lançable en deux
-secondes, Apple gagne chaque photo prise sur le vif.
+secondes, Apple gagne chaque photo prise sur le vif. Un ingénieur Apple l'a
+confirmé sur les forums : sans extension de capture, l'app n'apparaît même pas
+dans la liste du bouton Camera Control.
 
-- Extension LockedCameraCapture pour l'écran verrouillé et le bouton Camera
-  Control.
-- Bouton dans le Centre de contrôle.
-- Raccourcis Siri pour lancer un mode directement.
+Ordre imposé par le risque, pas par la valeur :
 
-Risque à mesurer d'abord : ajouter une extension à un projet Expo managé sans
-ouvrir Xcode. Le compilateur de la phase 1 sert de validation.
+1. **Canari** : ajouter uniquement un bouton de Centre de contrôle (extension
+   widget) et vérifier que l'app se lance encore. Une régression connue du
+   plugin d'extensions casse le démarrage sur React Native récent. Une
+   demi-journée qui décide de la suite.
+2. **Extension LockedCameraCapture** si le canari passe. Cible ExtensionKit,
+   `EXExtensionPointIdentifier` à `com.apple.securecapture`, iOS 18 minimum,
+   interface SwiftUI dédiée (pas de React Native dedans). Le moteur caméra est
+   réutilisable tel quel : `CameraEngine`, `FrameProcessor`, `FrameStacker` et
+   `CameraMath` n'importent qu'AVFoundation, Core Image et Vision.
+3. **Raccourcis Siri** dans l'app principale, pas dans le module : les App
+   Intents doivent être compilés dans la cible de l'app pour être découverts.
+
+Deux pièges notés d'avance : toujours régénérer le projet natif à neuf après un
+changement d'extension, et vérifier la version d'exécution après tout Swift
+ajouté dans une extension (elle n'entre pas dans l'empreinte, donc une OTA peut
+partir vers un binaire incompatible).
 
 ## Phase 4 : finitions photo (v0.9.x)
 

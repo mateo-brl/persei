@@ -25,6 +25,8 @@ export const HELP_TEXTS: Record<string, string> = {
     "Trois photos d'affilée : une sombre, une normale, une claire. Tu choisis la bonne ensuite, ou tu les fusionnes en HDR.",
   livePhoto: "Enregistre environ 1,5 s de vidéo autour de la photo, sauvée dans un fichier séparé.",
   depth: "Enregistre la carte de profondeur avec la photo, pour les effets portrait en retouche.",
+  codes:
+    "Repère les codes QR et les codes-barres dans le viseur et affiche un bandeau. Touche-le pour ouvrir le lien. Sans effet sur tes photos, c'est juste une lecture de la préview.",
   timer: "Retarde le déclenchement. Le temps de caler le téléphone ou d'entrer dans le cadre.",
   grid: "Grille des tiers. Place ton sujet sur une ligne ou une intersection, la composition respire mieux.",
   nightVision:

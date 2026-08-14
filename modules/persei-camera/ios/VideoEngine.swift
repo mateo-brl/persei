@@ -132,6 +132,7 @@ extension CameraEngine {
     }
     session.sessionPreset = video.savedPhotoPreset ?? .photo
     if let device { applyResolutionPreference(for: device) }
+    reapplyPhotoOutputOptions()
     session.commitConfiguration()
 
     setAssistOutputEnabled(true)
@@ -393,11 +394,14 @@ extension CameraEngine {
       let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("persei-video-\(UUID().uuidString).mov")
       let delegate = MovieRecordingDelegate()
+      self.pendingStartCompletion = completion
       delegate.onStart = { [weak self] _ in
         self?.sessionQueue.async {
-          self?.video.isRecording = true
-          self?.startProgressTimerLocked()
-          completion(.success(()))
+          guard let self else { return }
+          self.video.isRecording = true
+          self.startProgressTimerLocked()
+          self.pendingStartCompletion?(.success(()))
+          self.pendingStartCompletion = nil
         }
       }
       delegate.onFinish = { [weak self] result in
@@ -405,6 +409,15 @@ extension CameraEngine {
       }
       self.video.delegate = delegate
       self.video.output.startRecording(to: url, recordingDelegate: delegate)
+
+      // Si le fichier ne démarre jamais (connexion inactive, format refusé),
+      // la promesse resterait pendante et le bouton bloqué : on tranche.
+      self.sessionQueue.asyncAfter(deadline: .now() + 3) {
+        guard let pending = self.pendingStartCompletion else { return }
+        self.pendingStartCompletion = nil
+        self.video.output.stopRecording()
+        pending(.failure(VideoError.failure("P42", "recording did not start")))
+      }
     }
   }
 
@@ -427,6 +440,12 @@ extension CameraEngine {
       self.video.isRecording = false
       self.stopProgressTimerLocked()
       self.video.delegate = nil
+      // Enregistrement terminé avant même d'avoir commencé : on libère la
+      // promesse de départ, sinon le bouton reste bloqué.
+      if let start = self.pendingStartCompletion {
+        self.pendingStartCompletion = nil
+        start(.failure(VideoError.failure("P42", "recording ended before it started")))
+      }
 
       let completion = self.pendingStopCompletion
       self.pendingStopCompletion = nil

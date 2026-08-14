@@ -122,4 +122,6 @@ export type PerseiCameraEvents = {
   onRecordingStopped(payload: RecordingStopped): void;
   /** Le téléphone chauffe : « serious » avertit, « critical » a coupé. */
   onSystemPressure(payload: { level: string }): void;
+  /** Code QR ou code-barres lu dans la préview. */
+  onCodeDetected(payload: { value: string; type: string }): void;
 };
