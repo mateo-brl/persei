@@ -60,6 +60,12 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
     manualExposure: boolean
   ): Promise<string[]>;
   cancelLongExposure(): Promise<void>;
+  /**
+   * Supprime un fichier temporaire déjà copié dans la photothèque. Sans appel,
+   * la prise occupe le disque en double jusqu'à ce que le système vide le
+   * dossier temporaire. Refuse tout chemin hors de ce dossier.
+   */
+  discardTempFile(uri: string): Promise<void>;
 
   /** Autorisation micro, demandée seulement au passage en vidéo. */
   requestMicrophonePermission(): Promise<boolean>;

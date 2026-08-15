@@ -38,7 +38,8 @@ public class PerseiCameraModule: Module {
       "onRecordingProgress",
       "onRecordingStopped",
       "onSystemPressure",
-      "onCodeDetected"
+      "onCodeDetected",
+      "onCapabilities"
     )
 
     OnStartObserving {
@@ -53,6 +54,9 @@ public class PerseiCameraModule: Module {
       }
       CameraEngine.shared.onCodeDetected = { [weak self] payload in
         self?.sendEvent("onCodeDetected", payload)
+      }
+      CameraEngine.shared.onCapabilities = { [weak self] payload in
+        self?.sendEvent("onCapabilities", payload)
       }
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
@@ -77,6 +81,7 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onRecordingStopped = nil
       CameraEngine.shared.onSystemPressure = nil
       CameraEngine.shared.onCodeDetected = nil
+      CameraEngine.shared.onCapabilities = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -179,6 +184,11 @@ public class PerseiCameraModule: Module {
 
     AsyncFunction("cancelLongExposure") {
       CameraEngine.shared.cancelLongExposure()
+    }
+
+    /// Rend l'espace disque d'une prise déjà copiée dans la photothèque.
+    AsyncFunction("discardTempFile") { (uri: String) in
+      CameraEngine.discardTempFile(uri)
     }
 
     // MARK: Vidéo

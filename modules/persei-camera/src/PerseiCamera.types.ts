@@ -110,6 +110,23 @@ export interface VideoCapabilities {
   /** [minimum, maximum, défaut] de l'ouverture simulée, vide si indisponible. */
   apertureRange: number[];
   isCinematic: boolean;
+  /**
+   * Ce que le matériel sert réellement, lu après application. À comparer avec
+   * ce qui a été demandé : les replis (ProRes vers HEVC, Log vers HLG, SDR
+   * servi en 10 bits) se faisaient sans que rien ne l'indique.
+   *
+   * Optionnel à dessein : une mise à jour livrée par les airs peut tourner sur
+   * un binaire natif antérieur, qui ne renseigne pas ce champ.
+   */
+  applied?: AppliedVideoState;
+}
+
+export interface AppliedVideoState {
+  height: number;
+  frameRate: number;
+  range: VideoRange;
+  codec: string;
+  isTenBit: boolean;
 }
 
 export interface RecordingProgress {
@@ -144,4 +161,12 @@ export type PerseiCameraEvents = {
   onSystemPressure(payload: { level: string; message?: string }): void;
   /** Code QR ou code-barres lu dans la préview. */
   onCodeDetected(payload: { value: string; type: string }): void;
+  /**
+   * Capacités du nouvel objectif, après une bascule décidée par le moteur.
+   * Poser un réglage manuel fait passer la session sur une caméra physique,
+   * dont les bornes d'ISO et de vitesse sont bien plus étroites que celles du
+   * device virtuel. Les pastilles de zoom, elles, restent exprimées dans le
+   * repère virtuel : c'est l'échelle que l'interface manipule.
+   */
+  onCapabilities(capabilities: CameraCapabilities): void;
 };

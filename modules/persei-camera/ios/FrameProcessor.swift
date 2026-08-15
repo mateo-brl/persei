@@ -26,6 +26,19 @@ final class FrameProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
   private var overlayWasActive = false
   private var loupeWasActive = false
 
+  /// Efface les calques encore affichés.
+  ///
+  /// À appeler quand la sortie d'analyse est coupée : sans nouvelle trame,
+  /// le dernier calque calculé reste à l'écran, figé sur une image qui n'existe
+  /// plus, pendant que l'interface continue d'annoncer l'aide comme active.
+  func clearOverlays() {
+    overlayWasActive = false
+    loupeWasActive = false
+    onOverlayImage?(nil)
+    onLoupeImage?(nil)
+    onHistogram?([])
+  }
+
   func captureOutput(
     _ output: AVCaptureOutput,
     didOutput sampleBuffer: CMSampleBuffer,
