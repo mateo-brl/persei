@@ -791,8 +791,7 @@ extension CameraEngine {
     let dimensions = CMVideoFormatDescriptionGetDimensions(description)
     let codec: String
     if let connection = video.output.connection(with: .video),
-       let reglages = video.output.outputSettings(for: connection),
-       let type = reglages[AVVideoCodecKey] as? String {
+       let type = video.output.outputSettings(for: connection)[AVVideoCodecKey] as? String {
       switch AVVideoCodecType(rawValue: type) {
       case .h264: codec = "h264"
       case .hevc: codec = "hevc"
@@ -802,11 +801,15 @@ extension CameraEngine {
     } else {
       codec = "hevc"
     }
+    // `.appleLog` n'existe qu'à partir d'iOS 17 : un motif de `case` ne peut
+    // pas porter de garde de disponibilité, d'où la chaîne de `if`.
     let range: String
-    switch device.activeColorSpace {
-    case .appleLog: range = "log"
-    case .HLG_BT2020: range = "hdr"
-    default: range = "sdr"
+    if #available(iOS 17.0, *), device.activeColorSpace == .appleLog {
+      range = "log"
+    } else if device.activeColorSpace == .HLG_BT2020 {
+      range = "hdr"
+    } else {
+      range = "sdr"
     }
     return [
       "height": Int(dimensions.height),

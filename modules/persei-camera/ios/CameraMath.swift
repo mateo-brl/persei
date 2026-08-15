@@ -115,6 +115,33 @@ enum CameraMath {
     return PhysicalPick(index: wideIndex, zoom: max(1, safeZoom / max(base, 0.001)))
   }
 
+  /// Inverse de `physicalPick` : depuis la caméra physique active et son zoom,
+  /// retrouve le facteur du device virtuel.
+  ///
+  /// Les deux repères doivent circuler dans le même sens, sinon l'interface
+  /// lit une échelle et en écrit une autre : le pincement repartait de la
+  /// valeur physique et faisait sauter d'objectif au premier mouvement.
+  static func virtualZoom(
+    constituents: [LensSpec],
+    switchOvers: [Double],
+    index: Int,
+    zoom: Double
+  ) -> Double {
+    guard zoom.isFinite else { return 1 }
+    guard constituents.indices.contains(index) else { return zoom }
+    switch constituents[index].kind {
+    case .ultraWide:
+      return zoom
+    case .telephoto:
+      guard switchOvers.count >= 2, switchOvers[1] > 0 else { return zoom }
+      return zoom * switchOvers[1]
+    case .wide:
+      return zoom * max(wideBaseZoom(constituents: constituents, switchOvers: switchOvers), 0.001)
+    case .other:
+      return zoom
+    }
+  }
+
   /// Bornes réellement applicables : le format du device virtuel annonce des
   /// plages plus larges que celles de la caméra physique active (l'ultra
   /// grand-angle plafonne bien plus bas). Sortir de l'intersection fait lever
