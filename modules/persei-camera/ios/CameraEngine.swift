@@ -93,6 +93,7 @@ final class CameraEngine: NSObject {
   private var _onCodeDetected: (([String: Any]) -> Void)?
   private var _onCapabilities: (([String: Any]) -> Void)?
   private var _onAeAfLock: (([String: Any]) -> Void)?
+  private var _onShutterFired: (([String: Any]) -> Void)?
 
   private func lues<T>(_ lecture: () -> T) -> T {
     callbackLock.lock()
@@ -1079,6 +1080,12 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// Le capteur vient de figer l'image : retour visuel côté écran.
+  var onShutterFired: (([String: Any]) -> Void)? {
+    get { lues { _onShutterFired } }
+    set { callbackLock.lock(); _onShutterFired = newValue; callbackLock.unlock() }
+  }
+
   /// Verrouillage AE/AF signalé au JS, pour afficher l'état et le défaire.
   var onAeAfLock: (([String: Any]) -> Void)? {
     get { lues { _onAeAfLock } }
@@ -1683,6 +1690,22 @@ final class CameraEngine: NSObject {
     )
     settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
 
+    // Vignette embarquée dans le fichier : sans elle, la photothèque et les
+    // apps tierces doivent décoder l'image entière pour afficher une planche
+    // contact, et un DNG de 48 MP n'a tout simplement aucun aperçu.
+    if let type = settings.availableEmbeddedThumbnailPhotoCodecTypes.first {
+      settings.embeddedThumbnailPhotoFormat = [AVVideoCodecKey: type]
+    }
+    if rawType != nil, let type = settings.availableRawEmbeddedThumbnailPhotoCodecTypes.first {
+      settings.rawEmbeddedThumbnailPhotoFormat = [AVVideoCodecKey: type]
+    }
+    // Correction de distorsion : l'ultra grand-angle courbe les bords, et
+    // Apple la corrige d'office dans son app. Le réglage tient compte du
+    // contenu, il ne déforme pas les visages.
+    if photoOutput.isContentAwareDistortionCorrectionSupported {
+      settings.isAutoContentAwareDistortionCorrectionEnabled = true
+    }
+
     if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
       settings.flashMode = flashMode
     }
@@ -1733,6 +1756,21 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
 
   init(completion: @escaping (Result<[String], Error>) -> Void) {
     self.completion = completion
+  }
+
+  /// Instant exact où le capteur fige l'image.
+  ///
+  /// C'est le seul moment où un retour visuel a du sens : plus tôt il ment sur
+  /// ce qui est capturé, plus tard il arrive après coup. L'app ne donnait
+  /// aucun signe entre l'appui et l'apparition de la vignette, ce qui laisse
+  /// croire à un déclenchement raté sur une pose longue de nuit.
+  func photoOutput(
+    _ output: AVCapturePhotoOutput,
+    willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings
+  ) {
+    CameraEngine.shared.onShutterFired?([
+      "expectedPhotos": resolvedSettings.expectedPhotoCount,
+    ])
   }
 
   /// Nomme le fichier d'après ce qu'il contient vraiment.

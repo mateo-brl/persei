@@ -175,4 +175,10 @@ export type PerseiCameraEvents = {
    * ce retour, l'image cesse de réagir sans que rien ne l'explique.
    */
   onAeAfLock(payload: { locked: boolean }): void;
+  /**
+   * Le capteur vient de figer l'image. Entre l'appui et l'apparition de la
+   * vignette, l'écran ne donnait aucun signe : sur une pose de nuit, on croit
+   * à un déclenchement raté et on appuie une seconde fois.
+   */
+  onShutterFired(payload: { expectedPhotos: number }): void;
 };
