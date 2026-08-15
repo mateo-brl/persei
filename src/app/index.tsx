@@ -88,6 +88,12 @@ type CaptureMode = 'photo' | 'pose' | 'video';
 export default function CameraScreen() {
   const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [caps, setCaps] = useState<CameraCapabilities | null>(null);
+  /**
+   * La caméra a répondu au moins une fois. Booléen stable, contrairement aux
+   * capacités elles-mêmes : celles-ci sont réémises à chaque changement
+   * d'objectif, et tout effet qui en dépend rejouerait à chaque réglage manuel.
+   */
+  const cameraPrete = caps != null;
   const [front, setFront] = useState(false);
   const [raw, setRaw] = useState(false);
   const [captureMode, setCaptureMode] = useState<CaptureMode>('photo');
@@ -162,6 +168,8 @@ export default function CameraScreen() {
   const [lastUris, setLastUris] = useState<string[]>([]);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [code, setCode] = useState<{ value: string; type: string } | null>(null);
+  /** Exposition et mise au point verrouillées par un appui long sur la préview. */
+  const [aeAfLocked, setAeAfLocked] = useState(false);
   const [crashReport, setCrashReport] = useState<string | null>(null);
 
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
@@ -270,6 +278,11 @@ export default function CameraScreen() {
    */
   useEffect(() => {
     const sub = PerseiCamera.addListener('onCapabilities', setCaps);
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onAeAfLock', (p) => setAeAfLocked(p.locked));
     return () => sub.remove();
   }, []);
 
@@ -473,7 +486,14 @@ export default function CameraScreen() {
    */
   const applyLaunchMode = useCallback(
     (mode: string | null) => {
-      if (!mode || mode === 'photo') return;
+      if (!mode) return;
+      // Le mode photo était ignoré : un raccourci ou un bouton système qui le
+      // demandait n'ouvrait rien de ce qu'il annonçait, et laissait l'app dans
+      // le mode où elle était.
+      if (mode === 'photo') {
+        setCaptureMode('photo');
+        return;
+      }
       if (mode === 'video') {
         setCaptureMode('video');
         return;
@@ -485,9 +505,9 @@ export default function CameraScreen() {
   );
 
   useEffect(() => {
-    if (!caps) return;
+    if (!cameraPrete) return;
     PerseiCamera.consumeLaunchMode().then(applyLaunchMode).catch(() => {});
-  }, [caps, applyLaunchMode]);
+  }, [cameraPrete, applyLaunchMode]);
 
   // Bouton du Centre de contrôle ou de l'écran verrouillé : il ouvre l'app par
   // une URL, la seule chose qu'une extension puisse nous transmettre sans
@@ -647,10 +667,6 @@ export default function CameraScreen() {
   useEffect(() => {
     videoSettingsRef.current = videoSettings;
   }, [videoSettings]);
-
-  /** La caméra a répondu au moins une fois : booléen stable, contrairement aux
-   *  capacités, réémises à chaque changement d'objectif. */
-  const cameraPrete = caps != null;
 
   // Entrer en vidéo reconfigure la session (format explicite, micro, sortie
   // fichier). On n'y touche que sur demande, et on en ressort en quittant.
@@ -1065,6 +1081,16 @@ export default function CameraScreen() {
               <Text style={styles.codeText} numberOfLines={1}>
                 {describeCode(code.value, code.type)}
               </Text>
+            </Pressable>
+          ) : null}
+
+          {aeAfLocked ? (
+            <Pressable
+              style={styles.lockBanner}
+              onPress={() => PerseiCamera.releaseAeAfLock().catch(() => {})}
+              accessibilityLabel="Déverrouiller l’exposition et la mise au point"
+            >
+              <Text style={styles.lockText}>AE/AF VERROUILLÉ — toucher pour libérer</Text>
             </Pressable>
           ) : null}
 
@@ -1940,6 +1966,22 @@ const styles = StyleSheet.create({
     color: '#ffd60a',
     fontSize: 12,
     textAlign: 'center',
+  },
+  lockBanner: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 214, 10, 0.16)',
+    borderColor: '#ffd60a',
+    borderWidth: 1,
+    borderRadius: 10,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  lockText: {
+    color: '#ffd60a',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.6,
   },
   updateBanner: {
     alignSelf: 'center',

@@ -115,6 +115,37 @@ enum CameraMath {
     return PhysicalPick(index: wideIndex, zoom: max(1, safeZoom / max(base, 0.001)))
   }
 
+  /// Description d'une pose, écrite dans le commentaire EXIF du fichier.
+  ///
+  /// Aucun champ EXIF ne sait dire « somme de N trames » : un logiciel de
+  /// retouche ne lira que la durée d'une trame et croira à une pose d'une
+  /// seconde. La durée cumulée doit donc être écrite en toutes lettres, sinon
+  /// elle est perdue pour de bon une fois le fichier sorti de l'app.
+  static func poseSummary(frames: Int, secondsPerFrame: Double, mode: String) -> String {
+    let rendu: String
+    switch mode {
+    case "max": rendu = "fusion max (traînées conservées)"
+    case "both": rendu = "moyenne et fusion max"
+    default: rendu = "moyenne"
+    }
+    guard frames > 0, secondsPerFrame > 0, secondsPerFrame.isFinite else {
+      return "Persei — empilement \(rendu)"
+    }
+    let cumul = Double(frames) * secondsPerFrame
+    return "Persei — \(frames) trames de \(dureeCourte(secondsPerFrame)) empilées en \(rendu), "
+      + "\(dureeCourte(cumul)) cumulées"
+  }
+
+  /// Durée lisible : « 1/15 s » sous la seconde, « 2 min 32 s » au-delà.
+  static func dureeCourte(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "—" }
+    if seconds < 0.4 { return "1/\(Int((1 / seconds).rounded())) s" }
+    if seconds < 60 { return String(format: "%.1f s", seconds).replacingOccurrences(of: ".", with: ",") }
+    let minutes = Int(seconds) / 60
+    let reste = Int(seconds) % 60
+    return reste == 0 ? "\(minutes) min" : "\(minutes) min \(reste) s"
+  }
+
   /// Inverse de `physicalPick` : depuis la caméra physique active et son zoom,
   /// retrouve le facteur du device virtuel.
   ///

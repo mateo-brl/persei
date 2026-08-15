@@ -66,6 +66,8 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
    * dossier temporaire. Refuse tout chemin hors de ce dossier.
    */
   discardTempFile(uri: string): Promise<void>;
+  /** Relâche le verrouillage AE/AF posé par un appui long. */
+  releaseAeAfLock(): Promise<void>;
 
   /** Autorisation micro, demandée seulement au passage en vidéo. */
   requestMicrophonePermission(): Promise<boolean>;

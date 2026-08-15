@@ -1,5 +1,6 @@
 import CoreImage
 import Foundation
+import ImageIO
 import Vision
 
 /// Empile des trames en moyenne (« lueur » : nuit propre, bruit divisé par √N)
@@ -8,6 +9,12 @@ import Vision
 /// Options : alignement translationnel (pose à main levée, Vision) et filtre
 /// météores (seules les trames contenant un transitoire nourrissent le max).
 final class FrameStacker {
+  /// Mode d'empilement demandé, conservé pour le décrire dans le fichier.
+  let mode: String
+  /// Conditions de prise, posées par le moteur avant le départ. Nil laisse le
+  /// fichier sans métadonnées plutôt que d'en inventer.
+  var poseInfo: PoseInfo?
+
   private let wantsMean: Bool
   private let wantsMax: Bool
   private let alignEnabled: Bool
@@ -27,6 +34,7 @@ final class FrameStacker {
   private let ciContext = CIContext()
 
   init(mode: String, align: Bool = false, meteorFilter: Bool = false) {
+    self.mode = mode
     wantsMean = mode == "mean" || mode == "both"
     wantsMax = mode == "max" || mode == "both"
     alignEnabled = align
@@ -213,13 +221,25 @@ final class FrameStacker {
       // La moyenne réduit le bruit mais n'éclaircit pas : étirement
       // automatique de l'exposition pour les scènes sombres (nuit), neutre
       // sur les scènes déjà exposées.
-      if let uri = write(image: displayRender(of: mean), suffix: "lueur", colorSpace: colorSpace) {
+      if let uri = write(
+        image: displayRender(of: mean),
+        suffix: "lueur",
+        colorSpace: colorSpace,
+        frames: sumFrameCount
+      ) {
         uris.append(uri)
       }
     }
 
-    if let accumulator = maxAccumulator {
-      if let uri = write(image: displayRender(of: accumulator.image()), suffix: "etoiles", colorSpace: colorSpace) {
+    // Sans trame comptée, l'accumulateur ne contient que du noir : écrire ce
+    // fichier-là revenait à livrer une image vide sous un nom de pose.
+    if let accumulator = maxAccumulator, maxFrameCount > 0 {
+      if let uri = write(
+        image: displayRender(of: accumulator.image()),
+        suffix: "etoiles",
+        colorSpace: colorSpace,
+        frames: maxFrameCount
+      ) {
         uris.append(uri)
       }
     }
@@ -268,24 +288,124 @@ final class FrameStacker {
     return image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: ev])
   }
 
-  private func write(image: CIImage, suffix: String, colorSpace: CGColorSpace) -> String? {
+  private func write(
+    image: CIImage,
+    suffix: String,
+    colorSpace: CGColorSpace,
+    frames: Int
+  ) -> String? {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("persei-pose-\(suffix)-\(UUID().uuidString).heic")
     // Conversion explicite espace de travail (linéaire) → espace d'affichage :
     // sans elle, les octets partent linéaires dans le fichier et l'image
     // paraît écrasée dans les sombres.
     let encoded = image.matchedFromWorkingSpace(to: colorSpace) ?? image
+
+    // 10 bits d'abord. Une pose empile des dizaines de trames : le gain de
+    // dynamique est réel dans les dégradés du ciel, là où 8 bits laissent des
+    // bandes visibles. L'écriture peut refuser selon l'espace colorimétrique,
+    // d'où le repli explicite plutôt qu'un échec.
+    var ecrit = false
     do {
-      try ciContext.writeHEIFRepresentation(
+      try ciContext.writeHEIF10Representation(
         of: encoded,
         to: url,
-        format: .RGBA8,
         colorSpace: colorSpace,
         options: [:]
       )
-      return url.absoluteString
+      ecrit = true
     } catch {
-      return nil
+      ecrit = false
     }
+    if !ecrit {
+      do {
+        try ciContext.writeHEIFRepresentation(
+          of: encoded,
+          to: url,
+          format: .RGBA8,
+          colorSpace: colorSpace,
+          options: [:]
+        )
+      } catch {
+        return nil
+      }
+    }
+
+    appliquerMetadonnees(frames: frames, a: url)
+    return url.absoluteString
   }
+
+  /// Écrit les métadonnées dans le fichier déjà encodé.
+  ///
+  /// Passe par `CGImageDestinationAddImageFromSource`, qui recopie les octets
+  /// de l'image sans la ré-encoder : les 10 bits survivent, et on ne paie pas
+  /// une seconde compression. Une pose sortait jusqu'ici sans date, sans
+  /// objectif et sans exposition — inexploitable dès qu'elle quittait l'app.
+  private func appliquerMetadonnees(frames: Int, a url: URL) {
+    guard let info = poseInfo,
+          let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let type = CGImageSourceGetType(source)
+    else { return }
+
+    let horodatage = Self.horodatageExif(info.date)
+    let exif: [String: Any] = [
+      kCGImagePropertyExifExposureTime as String: info.secondsPerFrame,
+      kCGImagePropertyExifISOSpeedRatings as String: [Int(info.iso.rounded())],
+      kCGImagePropertyExifFNumber as String: info.aperture,
+      kCGImagePropertyExifDateTimeOriginal as String: horodatage,
+      kCGImagePropertyExifDateTimeDigitized as String: horodatage,
+      // 1 = exposition manuelle : c'est le cas, la pose fixe durée et ISO.
+      kCGImagePropertyExifExposureProgram as String: 1,
+      kCGImagePropertyExifLensModel as String: info.lensName,
+      kCGImagePropertyExifUserComment as String: CameraMath.poseSummary(
+        frames: frames,
+        secondsPerFrame: info.secondsPerFrame,
+        mode: mode
+      ),
+    ]
+    let tiff: [String: Any] = [
+      kCGImagePropertyTIFFMake as String: "Apple",
+      kCGImagePropertyTIFFModel as String: info.model,
+      kCGImagePropertyTIFFSoftware as String: "Persei \(info.appVersion)",
+      kCGImagePropertyTIFFDateTime as String: horodatage,
+    ]
+    let proprietes: [String: Any] = [
+      kCGImagePropertyExifDictionary as String: exif,
+      kCGImagePropertyTIFFDictionary as String: tiff,
+    ]
+
+    let temporaire = url.deletingLastPathComponent()
+      .appendingPathComponent("meta-\(url.lastPathComponent)")
+    guard let destination = CGImageDestinationCreateWithURL(temporaire as CFURL, type, 1, nil)
+    else { return }
+    CGImageDestinationAddImageFromSource(destination, source, 0, proprietes as CFDictionary)
+    guard CGImageDestinationFinalize(destination) else {
+      try? FileManager.default.removeItem(at: temporaire)
+      return
+    }
+    // Remplacement seulement si tout a réussi : mieux vaut un fichier sans
+    // métadonnées qu'un fichier tronqué.
+    _ = try? FileManager.default.replaceItemAt(url, withItemAt: temporaire)
+  }
+
+  /// Format d'horodatage EXIF, invariant de langue.
+  static func horodatageExif(_ date: Date) -> String {
+    let formateur = DateFormatter()
+    formateur.locale = Locale(identifier: "en_US_POSIX")
+    formateur.dateFormat = "yyyy:MM:dd HH:mm:ss"
+    return formateur.string(from: date)
+  }
+}
+
+/// Ce qu'on sait de la pose au moment de la lancer, et qu'on écrira dans le
+/// fichier. Le nombre de trames n'en fait pas partie : il n'est connu qu'à la
+/// fin, et c'est l'empileur qui le compte.
+struct PoseInfo {
+  var secondsPerFrame: Double = 0
+  var iso: Double = 0
+  var aperture: Double = 0
+  var lensName: String = ""
+  var model: String = ""
+  var appVersion: String = ""
+  var date: Date = Date()
 }

@@ -169,4 +169,10 @@ export type PerseiCameraEvents = {
    * repère virtuel : c'est l'échelle que l'interface manipule.
    */
   onCapabilities(capabilities: CameraCapabilities): void;
+  /**
+   * Verrouillage de l'exposition et de la mise au point, posé par un appui
+   * long sur la préview. Un verrou invisible est pire que pas de verrou : sans
+   * ce retour, l'image cesse de réagir sans que rien ne l'explique.
+   */
+  onAeAfLock(payload: { locked: boolean }): void;
 };
