@@ -70,6 +70,13 @@ class PerseiCameraView: ExpoView {
     assistLayer.contents = image
   }
 
+  /// Efface le carré de visée. Appelé quand le moteur relâche le verrou de son
+  /// propre chef — changement d'objectif, retour à l'automatique — pour que
+  /// l'écran ne montre pas un verrou qui n'existe plus.
+  func masquerViseur() {
+    viseurLayer.isHidden = true
+  }
+
   func setLoupe(_ image: CGImage?) {
     loupeLayer.isHidden = image == nil
     loupeLayer.contents = image

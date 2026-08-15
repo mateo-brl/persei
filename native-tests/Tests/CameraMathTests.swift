@@ -331,6 +331,30 @@ final class CameraMathTests: XCTestCase {
     )
   }
 
+  /// Deux règles de priorisation, et chacune a tué l'app une fois : le Bayer
+  /// exige la vitesse, et rien ne peut dépasser le plafond de la sortie.
+  func testQualityPriorityNeverBreaksEitherRule() {
+    XCTAssertEqual(
+      CameraMath.qualityPriority(rawKind: .bayer, cap: 3),
+      1,
+      "le RAW Bayer exige la vitesse, même quand la sortie autorise mieux"
+    )
+    XCTAssertEqual(CameraMath.qualityPriority(rawKind: .proRaw, cap: 3), 3)
+    XCTAssertEqual(
+      CameraMath.qualityPriority(rawKind: .processed, cap: 1),
+      1,
+      "plafond à la vitesse : on ne demande jamais au-dessus"
+    )
+    XCTAssertEqual(CameraMath.qualityPriority(rawKind: .processed, cap: 2), 2)
+    for plafond in 1...3 {
+      for format in [RawKind.bayer, .proRaw, .processed] {
+        let choisi = CameraMath.qualityPriority(rawKind: format, cap: plafond)
+        XCTAssertLessThanOrEqual(choisi, plafond == 1 && format != .bayer ? plafond : 3)
+        XCTAssertGreaterThanOrEqual(choisi, 1)
+      }
+    }
+  }
+
   // MARK: - Exposition d'une pose en automatique
 
   /// Ce que voyait Mateo : pose de 30 s en automatique, capteur bloqué à

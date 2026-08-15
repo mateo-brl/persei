@@ -775,6 +775,16 @@ final class CameraEngine: NSObject {
       applyExposureBiasLocked(to: device)
     } catch {}
 
+    // Le verrou appartenait à l'appareil qu'on vient de quitter : le nouveau
+    // repart en mesure continue. Le garder affiché ferait annoncer un verrou
+    // qui n'existe plus, et le carré resterait sur un point qui n'est plus le
+    // bon.
+    if aeAfLocked {
+      aeAfLocked = false
+      onAeAfLock?(["locked": false])
+      DispatchQueue.main.async { self.assistView?.masquerViseur() }
+    }
+
     // Le nouvel appareil n'a pas de format vidéo : sans ça, la session filmait
     // sur un format arbitraire après un réglage manuel, et seul un aller-retour
     // par l'écran le rattrapait. Même règle qu'à la configuration de session.
@@ -1050,6 +1060,7 @@ final class CameraEngine: NSObject {
       // l'app d'Apple : sinon le verrou ne se défait qu'en le cherchant.
       if self.aeAfLocked {
         self.aeAfLocked = false
+        DispatchQueue.main.async { self.assistView?.masquerViseur() }
         self.onAeAfLock?(["locked": false])
       }
       do {
@@ -1131,6 +1142,11 @@ final class CameraEngine: NSObject {
         return
       }
       self.aeAfLocked = actif
+      // Le carré suit toujours l'état réel, y compris quand le verrou est
+      // relâché depuis l'écran et non par un geste sur la préview.
+      if !actif {
+        DispatchQueue.main.async { self.assistView?.masquerViseur() }
+      }
       self.onAeAfLock?(["locked": actif])
     }
   }
@@ -1305,6 +1321,14 @@ final class CameraEngine: NSObject {
     }
     if photoOutput.isDepthDataDeliverySupported {
       photoOutput.isDepthDataDeliveryEnabled = depthEnabled
+    }
+    // Après la profondeur : l'activer change ce que la distorsion déclare
+    // supporter, et le tester avant reviendrait à lire une valeur périmée.
+    // Le drapeau de la sortie doit être posé ici, jamais dans les réglages de
+    // capture : demander la correction sur une sortie qui ne l'a pas activée
+    // lève une exception à l'affectation, avant même le déclenchement.
+    if photoOutput.isContentAwareDistortionCorrectionSupported {
+      photoOutput.isContentAwareDistortionCorrectionEnabled = true
     }
     // Ces trois-là étaient posés une seule fois, à la configuration initiale.
     // Un changement d'objectif recrée la connexion et les perd : le
@@ -1505,7 +1529,7 @@ final class CameraEngine: NSObject {
     settings.photoQualityPrioritization = .speed
 
     let captureId = settings.uniqueID
-    let delegate = PhotoCaptureDelegate { [weak self] result in
+    let delegate = PhotoCaptureDelegate(notifiesShutter: false) { [weak self] result in
       guard let self else { return }
       self.sessionQueue.async {
         self.inFlightCaptures.removeValue(forKey: captureId)
@@ -1688,7 +1712,12 @@ final class CameraEngine: NSObject {
       CameraMath.usablePhotoSize(available: definitionsDuFormatActif, cap: plafondVerifie()),
       sur: settings
     )
-    settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
+    settings.photoQualityPrioritization = AVCapturePhotoOutput.QualityPrioritization(
+      rawValue: CameraMath.qualityPriority(
+        rawKind: choix,
+        cap: photoOutput.maxPhotoQualityPrioritization.rawValue
+      )
+    ) ?? .balanced
 
     // Vignette embarquée dans le fichier : sans elle, la photothèque et les
     // apps tierces doivent décoder l'image entière pour afficher une planche
@@ -1700,9 +1729,12 @@ final class CameraEngine: NSObject {
       settings.rawEmbeddedThumbnailPhotoFormat = [AVVideoCodecKey: type]
     }
     // Correction de distorsion : l'ultra grand-angle courbe les bords, et
-    // Apple la corrige d'office dans son app. Le réglage tient compte du
-    // contenu, il ne déforme pas les visages.
-    if photoOutput.isContentAwareDistortionCorrectionSupported {
+    // Apple la corrige d'office dans son app. On teste l'état réel de la
+    // sortie, pas ce qu'elle déclare supporter — le drapeau retombe tout seul
+    // à NO dès que le support disparaît (changement d'objectif, de format,
+    // profondeur), et se fier au support ferait revenir l'exception après
+    // chaque bascule.
+    if photoOutput.isContentAwareDistortionCorrectionEnabled {
       settings.isAutoContentAwareDistortionCorrectionEnabled = true
     }
 
@@ -1754,7 +1786,13 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
   private var fileUris: [String] = []
   private var firstError: Error?
 
-  init(completion: @escaping (Result<[String], Error>) -> Void) {
+  /// Un empilement passe par ce même délégué, une fois par trame : sans ce
+  /// drapeau, l'éclair d'obturateur partait des dizaines de fois d'affilée et
+  /// couvrait la préview d'un stroboscope noir pendant toute la pose.
+  private let notifiesShutter: Bool
+
+  init(notifiesShutter: Bool = true, completion: @escaping (Result<[String], Error>) -> Void) {
+    self.notifiesShutter = notifiesShutter
     self.completion = completion
   }
 
@@ -1768,6 +1806,7 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     _ output: AVCapturePhotoOutput,
     willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings
   ) {
+    guard notifiesShutter else { return }
     CameraEngine.shared.onShutterFired?([
       "expectedPhotos": resolvedSettings.expectedPhotoCount,
     ])

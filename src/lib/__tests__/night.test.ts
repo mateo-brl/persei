@@ -27,7 +27,7 @@ const base = {
   front: false,
   timerSecs: 0,
   posing: false,
-  live: dark,
+  sombre: true,
 };
 
 test('une scène de nuit se reconnaît à l ISO ET à la vitesse', () => {
@@ -49,8 +49,11 @@ test('le mode nuit auto laisse la main dès que l utilisateur a décidé', () =>
   assert.equal(shouldAutoNight({ ...base, front: true }), false, 'pas de pose sur la frontale');
   assert.equal(shouldAutoNight({ ...base, timerSecs: 10 }), false, 'retardateur puis pose : illisible');
   assert.equal(shouldAutoNight({ ...base, posing: true }), false, 'une pose tourne déjà');
-  assert.equal(shouldAutoNight({ ...base, live: daylight }), false);
-  assert.equal(shouldAutoNight({ ...base, live: null }), false, 'aucune lecture capteur : on ne devine pas');
+  assert.equal(
+    shouldAutoNight({ ...base, sombre: false }),
+    false,
+    'scène pas jugée sombre : photo ordinaire'
+  );
 });
 
 /**

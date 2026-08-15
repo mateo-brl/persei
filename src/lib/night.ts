@@ -70,7 +70,15 @@ export interface AutoNightState {
   front: boolean;
   timerSecs: number;
   posing: boolean;
-  live: ExposureUpdate | null | undefined;
+  /**
+   * Scène sombre déjà décidée, hystérésis comprise.
+   *
+   * Le déclencheur recalculait le seuil de son côté pendant que le badge
+   * utilisait celui de sortie : dans la bande entre les deux, l'écran
+   * promettait une pose de nuit et l'appui prenait une photo ordinaire.
+   * Une seule décision, partagée.
+   */
+  sombre: boolean;
 }
 
 /**
@@ -86,6 +94,6 @@ export function shouldAutoNight(state: AutoNightState): boolean {
     !state.front &&
     state.timerSecs === 0 &&
     !state.posing &&
-    isDarkScene(state.live)
+    state.sombre
   );
 }
