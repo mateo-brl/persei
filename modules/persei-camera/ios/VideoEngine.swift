@@ -34,6 +34,8 @@ final class VideoState {
   /// Sortie du mode vidéo demandée pendant un enregistrement : reprise à la
   /// fin de l'écriture.
   var pendingLeave = false
+  /// Réponse à rendre une fois le démontage différé réellement fait.
+  var onLeaveFinished: (() -> Void)?
   var delegate: MovieRecordingDelegate?
   var progressTimer: DispatchSourceTimer?
   /// Réglages photo restaurés en quittant la vidéo.
@@ -92,8 +94,22 @@ extension CameraEngine {
       }
       if enabled {
         self.enterVideoModeLocked()
-      } else {
-        self.leaveVideoModeLocked()
+        completion(.success(self.videoCapabilities()))
+        return
+      }
+
+      self.leaveVideoModeLocked()
+      // Le démontage est différé quand un enregistrement était en cours : la
+      // sortie film ne peut pas disparaître sous un fichier qu'on est en train
+      // d'écrire. Répondre tout de suite annonçait le mode photo alors que la
+      // session était encore en vidéo — l'écran basculait sur un état faux. On
+      // attend la fin de l'écriture pour répondre.
+      if self.video.pendingLeave {
+        self.video.onLeaveFinished = { [weak self] in
+          guard let self else { return }
+          completion(.success(self.videoCapabilities()))
+        }
+        return
       }
       completion(.success(self.videoCapabilities()))
     }
@@ -632,6 +648,14 @@ extension CameraEngine {
   /// Démontage différé : la sortie film n'est retirée qu'une fois le fichier
   /// écrit.
   private func leaveVideoModeAfterRecording() {
+    defer {
+      // La demande de sortie attend cette réponse depuis l'arrêt de
+      // l'enregistrement : c'est maintenant, et seulement maintenant, que la
+      // session est réellement revenue en photo.
+      let repondre = video.onLeaveFinished
+      video.onLeaveFinished = nil
+      repondre?()
+    }
     guard video.isActive else { return }
     leaveVideoModeLocked()
   }
@@ -752,6 +776,44 @@ extension CameraEngine {
       ),
       "apertureRange": apertureRange(of: device),
       "isCinematic": cinematicActive,
+      // Ce qui est réellement servi, à comparer avec ce qui a été demandé.
+      // Les replis se faisaient en silence : on pouvait filmer en HLG avec
+      // « Log » affiché, en HEVC avec « ProRes » affiché, en 10 bits avec
+      // « Standard » affiché. L'interface a maintenant de quoi le dire.
+      "applied": appliedVideoState(of: device),
+    ]
+  }
+
+  /// État vidéo réel, lu sur le matériel et sur la sortie film.
+  private func appliedVideoState(of device: AVCaptureDevice) -> [String: Any] {
+    let format = device.activeFormat
+    let description = format.formatDescription
+    let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+    let codec: String
+    if let connection = video.output.connection(with: .video),
+       let reglages = video.output.outputSettings(for: connection),
+       let type = reglages[AVVideoCodecKey] as? String {
+      switch AVVideoCodecType(rawValue: type) {
+      case .h264: codec = "h264"
+      case .hevc: codec = "hevc"
+      case .proRes422, .proRes422HQ, .proRes422LT, .proRes422Proxy, .proRes4444: codec = "prores"
+      default: codec = type
+      }
+    } else {
+      codec = "hevc"
+    }
+    let range: String
+    switch device.activeColorSpace {
+    case .appleLog: range = "log"
+    case .HLG_BT2020: range = "hdr"
+    default: range = "sdr"
+    }
+    return [
+      "height": Int(dimensions.height),
+      "frameRate": 1.0 / max(device.activeVideoMinFrameDuration.seconds, 1e-9),
+      "range": range,
+      "codec": codec,
+      "isTenBit": videoSpec(of: format).isTenBit,
     ]
   }
 }

@@ -1,4 +1,5 @@
 import type {
+  AppliedVideoState,
   VideoCapabilities,
   VideoCodec,
   VideoRange,
@@ -158,6 +159,47 @@ export function explainVideoError(message: string): string {
     return 'Cette combinaison de résolution et de cadence n’existe pas sur cet appareil (P45).';
   }
   return message;
+}
+
+/**
+ * Écart entre ce qui a été demandé et ce que le matériel sert vraiment.
+ *
+ * Ces replis existent et sont légitimes — tous les formats n'acceptent pas
+ * tous les codecs. Ce qui ne l'est pas, c'est de les taire : on pouvait filmer
+ * en HLG avec « Log » affiché à l'écran, en HEVC avec « ProRes » affiché, ou
+ * en 10 bits en croyant tourner en standard. Rend `null` quand tout a été
+ * servi tel quel.
+ */
+export function describeFallback(
+  demande: VideoSettings,
+  servi: AppliedVideoState | undefined
+): string | null {
+  if (!servi) return null;
+  const ecarts: string[] = [];
+
+  if (demande.range === 'log' && servi.range !== 'log') {
+    ecarts.push(servi.range === 'hdr' ? 'Log indisponible, rendu en HDR' : 'Log indisponible, rendu en standard');
+  } else if (demande.range === 'hdr' && servi.range === 'sdr') {
+    ecarts.push('HDR indisponible, rendu en standard');
+  } else if (demande.range === 'sdr' && servi.isTenBit) {
+    ecarts.push('standard demandé, servi en 10 bits');
+  }
+
+  if (demande.codec === 'prores' && servi.codec !== 'prores') {
+    ecarts.push(`ProRes indisponible, encodé en ${servi.codec.toUpperCase()}`);
+  } else if (demande.codec !== servi.codec && servi.codec !== '') {
+    ecarts.push(`codec ${servi.codec.toUpperCase()} au lieu de ${demande.codec.toUpperCase()}`);
+  }
+
+  if (servi.height > 0 && servi.height !== demande.height) {
+    ecarts.push(`${servi.height}p au lieu de ${demande.height}p`);
+  }
+  if (servi.frameRate > 0 && Math.abs(servi.frameRate - demande.frameRate) > 0.6) {
+    ecarts.push(`${Math.round(servi.frameRate)} i/s au lieu de ${Math.round(demande.frameRate)}`);
+  }
+
+  if (ecarts.length === 0) return null;
+  return `Réglage adapté par l’appareil : ${ecarts.join(', ')}.`;
 }
 
 /** Message d'un arrêt subi, en clair pour l'utilisateur. */

@@ -63,12 +63,14 @@ import {
   apertureStops,
   clampVideoSettings,
   DEFAULT_VIDEO,
+  describeFallback,
   describeVideoMode,
   explainStop,
   explainVideoError,
   frameRatesFor,
   remainingSeconds,
 } from '../lib/video';
+import { pickThumbnail } from '../lib/capture';
 import { describeCode, isOpenableUrl } from '../lib/codes';
 import { modeFromUrl } from '../lib/launch';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
@@ -140,6 +142,21 @@ export default function CameraScreen() {
   const [poseMeteor, setPoseMeteor] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Fichiers temporaires de la dernière prise, encore lus par la visionneuse. */
+  const tempFilesRef = useRef<string[]>([]);
+
+  /**
+   * Rend l'espace des prises précédentes, en gardant celle qui est encore
+   * affichée dans la visionneuse. Sans ce ménage, une séance de cent photos
+   * laissait cent fichiers dans le dossier temporaire, en plus de la
+   * photothèque — et le garde-fou d'espace libre les ignorait tous.
+   */
+  const purgerTemporaires = useCallback((garder: string[]) => {
+    const aRendre = tempFilesRef.current.filter((uri) => !garder.includes(uri));
+    tempFilesRef.current = garder;
+    aRendre.forEach((uri) => PerseiCamera.discardTempFile(uri).catch(() => {}));
+  }, []);
   const [toast, setToast] = useState<string | null>(null);
   const [thumbUri, setThumbUri] = useState<string | null>(null);
   const [lastUris, setLastUris] = useState<string[]>([]);
@@ -243,6 +260,18 @@ export default function CameraScreen() {
       }
     })();
   }, [permission, position]);
+
+  /**
+   * Le moteur renvoie ses capacités chaque fois qu'il change d'objectif —
+   * ce qui arrive tout seul dès qu'un réglage manuel est posé, puisque le
+   * device virtuel ne sait pas les appliquer. Sans cette écoute, les molettes
+   * gardaient les bornes d'un capteur qui n'est plus dans la session, et
+   * proposaient des valeurs qu'il refuse.
+   */
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onCapabilities', setCaps);
+    return () => sub.remove();
+  }, []);
 
   // Un changement d'objectif réinitialise le matériel : on réapplique l'état.
   useEffect(() => {
@@ -504,9 +533,11 @@ export default function CameraScreen() {
         poseMeteor && poseStyle !== 'mean',
         !exposureAuto
       );
-      setLastUris(uris);
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
-      if (uris[0]) setThumbUri(uris[0]);
+      purgerTemporaires(uris);
+      setLastUris(uris);
+      const vignette = pickThumbnail(uris);
+      if (vignette) setThumbUri(vignette);
       setToast('Pose enregistrée ✓');
     } catch (e) {
       setToast(`Échec pose : ${formatError(e)}`);
@@ -529,6 +560,7 @@ export default function CameraScreen() {
     poseStyle,
     poseAlign,
     poseMeteor,
+    purgerTemporaires,
   ]);
 
   // Le pincement pilote un réglage matériel asynchrone : inutile de le tenir
@@ -539,9 +571,13 @@ export default function CameraScreen() {
     () =>
       Gesture.Pinch()
         .runOnJS(true)
+        // Zoomer pendant une pose change le cadrage entre deux trames — et
+        // peut même faire changer d'objectif au milieu de l'empilement, ce qui
+        // rend l'alignement impossible et perd le RAW en route.
+        .enabled(!posing)
         .onStart(rememberZoom)
         .onUpdate((e) => applyZoom(e.scale)),
-    [rememberZoom, applyZoom]
+    [rememberZoom, applyZoom, posing]
   );
   /* eslint-enable react-hooks/refs */
 
@@ -558,15 +594,19 @@ export default function CameraScreen() {
         !useRaw && bracketEv > 0 ? [-bracketEv, 0, bracketEv] : undefined;
       const uris = await PerseiCamera.capturePhoto({ raw: useRaw, bracketStops });
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
+      // La visionneuse lit les fichiers de la dernière prise : on ne peut pas
+      // les effacer tout de suite. On rend en revanche ceux d'avant, sinon
+      // chaque déclenchement laissait sa copie sur le disque pour la séance.
+      purgerTemporaires(uris);
       setLastUris(uris);
-      const heic = uris.find((u) => u.endsWith('.heic')) ?? uris[0];
-      if (heic) setThumbUri(heic);
+      const vignette = pickThumbnail(uris, bracketStops);
+      if (vignette) setThumbUri(vignette);
     } catch (e) {
       setToast(`Échec capture : ${formatError(e)}`);
     } finally {
       setCapturing(false);
     }
-  }, [raw, caps, bracketEv]);
+  }, [raw, caps, bracketEv, purgerTemporaires]);
 
   /** Mode nuit auto : pose alignée de 10 s à la place d'un cliché bruité. */
   const captureNightShot = useCallback(async () => {
@@ -587,8 +627,10 @@ export default function CameraScreen() {
       // L'ISO passé n'est plus lu, il ne reste que pour la forme du contrat.
       const uris = await PerseiCamera.startLongExposure(10, 1600, 'mean', true, false, false);
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
+      purgerTemporaires(uris);
       setLastUris(uris);
-      if (uris[0]) setThumbUri(uris[0]);
+      const vignette = pickThumbnail(uris);
+      if (vignette) setThumbUri(vignette);
       setToast('Photo de nuit enregistrée ✓');
     } catch (e) {
       setToast(`Échec pose : ${formatError(e)}`);
@@ -597,7 +639,7 @@ export default function CameraScreen() {
       setPoseProgress(null);
       deactivateKeepAwake('pose').catch(() => {});
     }
-  }, []);
+  }, [purgerTemporaires]);
 
   // MARK: vidéo
 
@@ -636,7 +678,10 @@ export default function CameraScreen() {
 
   const updateVideoSettings = useCallback(
     (patch: Partial<VideoSettings>) => {
-      const next = clampVideoSettings({ ...videoSettingsRef.current, ...patch }, videoCaps);
+      // Retenu avant l'appel : la ref suit l'état, elle vaudrait déjà `next`
+      // au moment où un refus arrive, et le retour en arrière serait sans effet.
+      const precedent = videoSettingsRef.current;
+      const next = clampVideoSettings({ ...precedent, ...patch }, videoCaps);
       setVideoSettings(next);
       // Le flou cinématique interdit tout réglage manuel côté matériel : on
       // remet l'écran en accord avec ce que la caméra va faire.
@@ -646,7 +691,21 @@ export default function CameraScreen() {
         setWbAuto(true);
         setActiveParam(null);
       }
-      PerseiCamera.configureVideo(next).catch((e) => setToast(explainVideoError(formatError(e))));
+      PerseiCamera.configureVideo(next)
+        .then((servi) => {
+          setVideoCaps(servi);
+          // Le matériel a le dernier mot : s'il a changé quelque chose, ça se
+          // dit. Le silence sur ces replis était le pire mensonge d'état de
+          // toute la vidéo.
+          const ecart = describeFallback(next, servi.applied);
+          if (ecart) setToast(ecart);
+        })
+        .catch((e) => {
+          // Réglage refusé : l'écran revient à ce que la caméra fait vraiment,
+          // au lieu de garder la valeur demandée.
+          setVideoSettings(precedent);
+          setToast(explainVideoError(formatError(e)));
+        });
     },
     [videoCaps]
   );
@@ -660,6 +719,12 @@ export default function CameraScreen() {
       }
       await MediaLibrary.createAssetAsync(uri);
       setLastUris([uri]);
+      // La copie est faite : le fichier temporaire doit partir tout de suite.
+      // Une vidéo 4K pèse plusieurs gigaoctets, et tant qu'elle restait en
+      // double le garde-fou d'espace libre comptait une place déjà prise.
+      // La visionneuse renvoie vers Photos pour les vidéos, elle n'a pas
+      // besoin du fichier.
+      PerseiCamera.discardTempFile(uri).catch(() => {});
     } catch (e) {
       setToast(`Sauvegarde vidéo : ${formatError(e)}`);
     }
@@ -715,6 +780,10 @@ export default function CameraScreen() {
         setToast(
           'Trop chaud : la caméra a été allégée et l’enregistrement arrêté. Laisse refroidir une minute.'
         );
+      } else if (payload.level === 'nominal') {
+        // Le moteur a rallumé ce qu'il avait coupé : sans ce message, l'écran
+        // gardait l'avertissement de chaleur jusqu'au redémarrage de l'app.
+        setToast('Température revenue à la normale. Les aides sont réactivées.');
       } else if (payload.level === 'sessionError') {
         setToast(payload.message ?? 'Erreur de session caméra (P12). La caméra a redémarré.');
       }
@@ -732,25 +801,58 @@ export default function CameraScreen() {
     }
   }, [recPaused]);
 
-  const capture = useCallback(() => {
-    if (timerSecs === 0) {
-      shoot();
-      return;
+  /** Arrête un décompte en cours. Sans effet s'il n'y en a pas. */
+  const cancelCountdown = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
     }
-    let remaining = timerSecs;
-    setCountdown(remaining);
-    const interval = setInterval(() => {
-      remaining -= 1;
-      setCountdown(remaining);
-      if (remaining <= 0) {
-        clearInterval(interval);
-        shoot();
+    setCountdown(0);
+  }, []);
+
+  /**
+   * Exécute une action après le retardateur.
+   *
+   * L'intervalle est retenu dans une ref parce qu'il ne l'était pas : changer
+   * de mode pendant le décompte laissait le minuteur courir, puis déclencher
+   * tout seul dans un mode qui n'était plus celui affiché. Il était aussi
+   * impossible à annuler, le déclencheur étant désactivé pendant le décompte.
+   */
+  const afterTimer = useCallback(
+    (action: () => void) => {
+      if (timerSecs === 0) {
+        action();
+        return;
       }
-    }, 1000);
-  }, [timerSecs, shoot]);
+      cancelCountdown();
+      let remaining = timerSecs;
+      setCountdown(remaining);
+      countdownRef.current = setInterval(() => {
+        remaining -= 1;
+        setCountdown(remaining);
+        if (remaining <= 0) {
+          cancelCountdown();
+          action();
+        }
+      }, 1000);
+    },
+    [timerSecs, cancelCountdown]
+  );
+
+  const capture = useCallback(() => afterTimer(shoot), [afterTimer, shoot]);
+
+  // Changer de mode, ou quitter l'écran, arrête le décompte.
+  useEffect(() => cancelCountdown, [captureMode, cancelCountdown]);
 
   const triggerShutter = useCallback(() => {
-    if (capturing || countdown > 0 || !caps) return;
+    // Un décompte en cours se coupe au déclencheur : c'est le geste attendu, et
+    // il n'existait pas — le bouton était simplement inerte jusqu'au bout.
+    if (countdown > 0) {
+      cancelCountdown();
+      setToast('Retardateur annulé');
+      return;
+    }
+    if (capturing || !caps) return;
     if (captureMode === 'video') {
       if (recording) {
         endRecording();
@@ -763,7 +865,9 @@ export default function CameraScreen() {
       if (posing) {
         PerseiCamera.cancelLongExposure().catch(() => {});
       } else {
-        startPose();
+        // Le retardateur vaut aussi pour la pose : c'est même là qu'il sert le
+        // plus, puisqu'il évite de bouger l'appareil au moment du départ.
+        afterTimer(startPose);
       }
       return;
     }
@@ -785,6 +889,8 @@ export default function CameraScreen() {
     posing,
     startPose,
     capture,
+    afterTimer,
+    cancelCountdown,
     autoNight,
     exposureAuto,
     timerSecs,
@@ -1272,7 +1378,9 @@ export default function CameraScreen() {
             <Pressable
               style={({ pressed }) => [styles.shutterButton, pressed && styles.shutterPressed]}
               onPress={triggerShutter}
-              disabled={capturing || countdown > 0 || !caps}
+              // Le décompte ne désactive plus le bouton : c'est lui qui
+              // l'annule.
+              disabled={capturing || !caps}
             >
               {posing || recording ? (
                 <View style={styles.stopSquare} />

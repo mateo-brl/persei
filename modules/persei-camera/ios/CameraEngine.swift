@@ -91,6 +91,7 @@ final class CameraEngine: NSObject {
   private var _onRecordingStopped: (([String: Any]) -> Void)?
   private var _onSystemPressure: (([String: Any]) -> Void)?
   private var _onCodeDetected: (([String: Any]) -> Void)?
+  private var _onCapabilities: (([String: Any]) -> Void)?
 
   private func lues<T>(_ lecture: () -> T) -> T {
     callbackLock.lock()
@@ -237,6 +238,9 @@ final class CameraEngine: NSObject {
     session.addInput(input)
     videoInput = input
     device = newDevice
+    // Changer de côté ou d'objectif rend caduc le repère d'échelle précédent.
+    savedVirtualDevice = newDevice.constituentDevices.isEmpty ? nil : newDevice
+    savedVirtualZoom = nil
 
     if !session.outputs.contains(photoOutput) {
       guard session.canAddOutput(photoOutput) else {
@@ -250,23 +254,7 @@ final class CameraEngine: NSObject {
     if photoOutput.isAppleProRAWSupported {
       photoOutput.isAppleProRAWEnabled = true
     }
-    if photoOutput.isLivePhotoCaptureSupported {
-      photoOutput.isLivePhotoCaptureEnabled = livePhotoEnabled
-    }
-    if photoOutput.isDepthDataDeliverySupported {
-      photoOutput.isDepthDataDeliveryEnabled = depthEnabled
-    }
-    if #available(iOS 17.0, *) {
-      if photoOutput.isZeroShutterLagSupported {
-        photoOutput.isZeroShutterLagEnabled = true
-      }
-      if photoOutput.isResponsiveCaptureSupported {
-        photoOutput.isResponsiveCaptureEnabled = true
-      }
-      if photoOutput.isFastCapturePrioritizationSupported {
-        photoOutput.isFastCapturePrioritizationEnabled = true
-      }
-    }
+    reapplyPhotoOutputOptions()
 
     if !session.outputs.contains(videoDataOutput) {
       // 4:2:0 8 bits plutôt que du BGRA : Core Image le lit nativement et la
@@ -395,6 +383,22 @@ final class CameraEngine: NSObject {
     return connexion.isActive && connexion.isEnabled
   }
 
+  /// Supprime un fichier temporaire une fois copié dans la photothèque.
+  ///
+  /// Sans ça, chaque prise restait en double sur le disque : une fois dans
+  /// Photos, une fois dans le dossier temporaire de l'app, qui n'est vidé
+  /// qu'au bon vouloir du système. Le garde-fou d'espace libre comptait donc
+  /// une place déjà consommée — décoratif sur une vidéo 4K de plusieurs Go.
+  ///
+  /// On refuse tout chemin hors du dossier temporaire : cette fonction traverse
+  /// la frontière JS, elle ne doit pas pouvoir effacer autre chose.
+  static func discardTempFile(_ uri: String) {
+    guard let url = URL(string: uri), url.isFileURL else { return }
+    let temp = FileManager.default.temporaryDirectory.standardizedFileURL.path
+    guard url.standardizedFileURL.path.hasPrefix(temp) else { return }
+    try? FileManager.default.removeItem(at: url)
+  }
+
   private static func megapixels(of dimensions: CMVideoDimensions) -> Double {
     Double(dimensions.width) * Double(dimensions.height) / 1_000_000.0
   }
@@ -444,28 +448,49 @@ final class CameraEngine: NSObject {
       AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil
     let maxDimensions = format.supportedMaxPhotoDimensions.last
     let maxMegapixels = maxDimensions.map { Double($0.width) * Double($0.height) / 1_000_000.0 } ?? 12.0
+    // Bornes de l'appareil réellement actif, pas du format virtuel : sur une
+    // caméra physique elles sont bien plus étroites, et une molette qui promet
+    // un ISO que le capteur refuse fait lever AVFoundation à l'application.
+    let bounds = exposureBounds(of: device)
+    // Le zoom, lui, reste dans le repère virtuel : c'est l'échelle que le JS
+    // manipule, et une caméra physique n'a pas de pastilles comparables.
+    let repere = savedVirtualDevice ?? device
 
     return [
-      "minIso": Double(format.minISO),
-      "maxIso": Double(format.maxISO),
-      "minShutter": format.minExposureDuration.seconds,
-      "maxShutter": format.maxExposureDuration.seconds,
+      "minIso": Double(bounds.minIso),
+      "maxIso": Double(bounds.maxIso),
+      "minShutter": bounds.minSeconds,
+      "maxShutter": bounds.maxSeconds,
       "minExposureBias": Double(device.minExposureTargetBias),
       "maxExposureBias": Double(device.maxExposureTargetBias),
       "supportsRaw": !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
       "supportsProRaw": photoOutput.isAppleProRAWSupported,
       "maxMegapixels": maxMegapixels,
       "photoResolutions": photoResolutions(of: device),
-      "zoomPresets": zoomPresets(of: device),
+      "zoomPresets": zoomPresets(of: repere),
       "hasFrontCamera": hasFrontCamera,
-      "minZoom": Double(device.minAvailableVideoZoomFactor),
-      "maxZoom": Double(device.maxAvailableVideoZoomFactor),
+      "minZoom": Double(repere.minAvailableVideoZoomFactor),
+      "maxZoom": Double(repere.maxAvailableVideoZoomFactor),
       "hasFlash": device.hasFlash,
       "hasTorch": device.hasTorch,
       "supportsLivePhoto": photoOutput.isLivePhotoCaptureSupported,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
       "maxBracketCount": Int(photoOutput.maxBracketedCapturePhotoCount),
     ]
+  }
+
+  /// Capacités poussées vers JS après un changement d'objectif.
+  var onCapabilities: (([String: Any]) -> Void)? {
+    get { lues { _onCapabilities } }
+    set { callbackLock.lock(); _onCapabilities = newValue; callbackLock.unlock() }
+  }
+
+  /// Les bornes changent avec l'objectif actif. Sans cette réémission, les
+  /// molettes restent calibrées sur un appareil qui n'est plus dans la session :
+  /// l'écran propose des valeurs que le capteur refuse.
+  private func emitCapabilities() {
+    guard let device, let onCapabilities else { return }
+    onCapabilities(capabilities(of: device))
   }
 
   // MARK: - Live readout
@@ -498,12 +523,16 @@ final class CameraEngine: NSObject {
     case .shutdown:
       stopRecordingBecause("thermal")
       onSystemPressure?(["level": "shutdown"])
-      sessionQueue.async { self.setAssistOutputEnabled(false) }
+      sessionQueue.async {
+        self.thermalThrottled = true
+        self.refreshAssistOutputLocked()
+      }
     case .critical:
       stopRecordingBecause("thermal")
       onSystemPressure?(["level": "critical"])
       sessionQueue.async {
-        self.setAssistOutputEnabled(false)
+        self.thermalThrottled = true
+        self.refreshAssistOutputLocked()
         // Rendre la cadence au système : il la remontera en refroidissant.
         guard #available(iOS 18.0, *), let device = self.device,
               device.activeFormat.isAutoVideoFrameRateSupported,
@@ -517,11 +546,25 @@ final class CameraEngine: NSObject {
       }
     case .serious:
       onSystemPressure?(["level": "serious"])
-      sessionQueue.async { self.setAssistOutputEnabled(false) }
+      sessionQueue.async {
+        self.thermalThrottled = true
+        self.refreshAssistOutputLocked()
+      }
     default:
-      break
+      // Retour à la normale. Il n'était traité nulle part : les aides coupées
+      // par la chaleur ne se rallumaient jamais, et l'écran continuait de les
+      // annoncer actives sur un calque figé jusqu'au redémarrage de l'app.
+      sessionQueue.async {
+        guard self.thermalThrottled else { return }
+        self.thermalThrottled = false
+        self.refreshAssistOutputLocked()
+        self.onSystemPressure?(["level": "nominal"])
+      }
     }
   }
+
+  /// Vrai tant que la chaleur impose d'alléger la session.
+  private var thermalThrottled = false
 
   /// Avertissement thermique vers le JS.
   var onSystemPressure: (([String: Any]) -> Void)? {
@@ -563,6 +606,10 @@ final class CameraEngine: NSObject {
   /// faire sur la caméra physique correspondant au zoom courant, puis on
   /// revient au virtuel en mode auto.
   private var savedVirtualZoom: CGFloat?
+  /// Device virtuel quitté pour un réglage manuel. Il reste le repère d'échelle
+  /// du zoom tant qu'on est sur une caméra physique : sans lui, une valeur
+  /// venue du JS n'a plus de sens.
+  private var savedVirtualDevice: AVCaptureDevice?
   // Le header Apple est explicite : les devices virtuels ne supportent ni
   // l'exposition custom, ni lensPosition, ni les gains de balance des blancs.
   // Chaque réglage manuel bascule donc sur le physique ; on ne rend le
@@ -600,6 +647,7 @@ final class CameraEngine: NSObject {
     guard let current = device, !current.constituentDevices.isEmpty else { return }
     let currentZoom = current.videoZoomFactor
     savedVirtualZoom = currentZoom
+    savedVirtualDevice = current
     let target = physicalConstituent(of: current, at: currentZoom)
     switchInputLocked(to: target.device, zoom: target.zoom)
   }
@@ -614,6 +662,7 @@ final class CameraEngine: NSObject {
     else { return }
     switchInputLocked(to: virtualDevice, zoom: savedVirtualZoom ?? 2.0)
     savedVirtualZoom = nil
+    savedVirtualDevice = virtualDevice
   }
 
   private func switchInputLocked(to newDevice: AVCaptureDevice, zoom: CGFloat) {
@@ -642,6 +691,9 @@ final class CameraEngine: NSObject {
         connection.videoOrientation = .portrait
       }
     }
+    // La connexion photo aussi : zero shutter lag et compagnie se perdent avec
+    // elle, et le déclenchement redevenait lent sans que rien ne le signale.
+    reapplyPhotoOutputOptions()
     session.commitConfiguration()
 
     guard let device else { return }
@@ -654,13 +706,20 @@ final class CameraEngine: NSObject {
       max(zoom, device.minAvailableVideoZoomFactor),
       device.maxAvailableVideoZoomFactor
     )
-    if abs(clampedZoom - device.videoZoomFactor) > 0.01 {
-      do {
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      if abs(clampedZoom - device.videoZoomFactor) > 0.01 {
         device.videoZoomFactor = clampedZoom
-      } catch {}
-    }
+      }
+      // Le nouvel appareil part à 0 IL : sans ce report, la molette affichait
+      // une correction que le capteur n'appliquait plus.
+      applyExposureBiasLocked(to: device)
+    } catch {}
+
+    // Les bornes viennent de changer avec l'objectif : le JS doit les recevoir,
+    // sinon ses molettes proposent des valeurs que ce capteur-ci refuse.
+    emitCapabilities()
   }
 
   private func withLockedDevice(_ body: (AVCaptureDevice) throws -> Void) throws {
@@ -749,11 +808,25 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// Correction d'exposition demandée. Retenue parce qu'un changement
+  /// d'objectif la remet à zéro sur le matériel sans que l'interface le sache :
+  /// la molette affichait +1,5 IL pendant que le capteur était revenu à 0.
+  private var exposureBias: Double = 0
+
   func setExposureBias(_ bias: Double) throws {
+    exposureBias = bias
     try withLockedDevice { device in
-      let clamped = min(max(Float(bias), device.minExposureTargetBias), device.maxExposureTargetBias)
-      device.setExposureTargetBias(clamped, completionHandler: nil)
+      applyExposureBiasLocked(to: device)
     }
+  }
+
+  /// À appeler device déjà verrouillé.
+  private func applyExposureBiasLocked(to device: AVCaptureDevice) {
+    let clamped = min(
+      max(Float(exposureBias), device.minExposureTargetBias),
+      device.maxExposureTargetBias
+    )
+    device.setExposureTargetBias(clamped, completionHandler: nil)
   }
 
   func setLensPosition(_ position: Double) throws {
@@ -839,14 +912,52 @@ final class CameraEngine: NSObject {
     }
   }
 
+  /// Zoom exprimé dans l'échelle du device **virtuel**. C'est la seule que le
+  /// JS connaisse : les pastilles et les bornes du pincement viennent de lui.
+  ///
+  /// Tant qu'un réglage manuel tient la session sur une caméra physique, cette
+  /// échelle n'est plus celle du matériel actif. Y appliquer le 1× du virtuel,
+  /// qui vaut 2,0, donnait un recadrage 2× — et interdisait au passage le RAW
+  /// Bayer, qui exige exactement 1,0. On traduit donc, et on change d'objectif
+  /// quand le zoom demandé appartient à un autre.
   func setZoom(_ factor: Double) throws {
-    try withLockedDevice { device in
-      let clamped = min(
-        max(CGFloat(factor), device.minAvailableVideoZoomFactor),
-        device.maxAvailableVideoZoomFactor
-      )
-      device.videoZoomFactor = clamped
+    var result: Result<Void, Error> = .success(())
+    sessionQueue.sync {
+      guard let device = self.device else {
+        result = .failure(CameraEngineError.notRunning)
+        return
+      }
+      // Sur le device virtuel, l'échelle demandée est déjà la bonne. Le repère
+      // doit aussi regarder du même côté : passer en façade laisse un repère
+      // arrière derrière lui, qui ne veut plus rien dire.
+      guard device.constituentDevices.isEmpty,
+            let virtual = self.savedVirtualDevice,
+            virtual.position == device.position
+      else {
+        result = Result { try self.appliquerZoomLocked(CGFloat(factor), sur: device) }
+        return
+      }
+
+      // Le repère virtuel suit la demande : c'est lui qu'on restaurera en
+      // revenant à l'automatique, le cadrage ne doit pas sauter à ce moment-là.
+      self.savedVirtualZoom = CGFloat(factor)
+      let cible = self.physicalConstituent(of: virtual, at: CGFloat(factor))
+      if cible.device.uniqueID != device.uniqueID {
+        self.switchInputLocked(to: cible.device, zoom: cible.zoom)
+        return
+      }
+      result = Result { try self.appliquerZoomLocked(cible.zoom, sur: device) }
     }
+    try result.get()
+  }
+
+  private func appliquerZoomLocked(_ zoom: CGFloat, sur device: AVCaptureDevice) throws {
+    try device.lockForConfiguration()
+    defer { device.unlockForConfiguration() }
+    device.videoZoomFactor = min(
+      max(zoom, device.minAvailableVideoZoomFactor),
+      device.maxAvailableVideoZoomFactor
+    )
   }
 
   /// Point d'intérêt (coordonnées device, 0-1) : focus one-shot toujours,
@@ -855,7 +966,9 @@ final class CameraEngine: NSObject {
   /// peut être occupée plusieurs secondes pendant une pose (watchdog sinon).
   func setPointOfInterest(_ point: CGPoint) {
     sessionQueue.async {
-      guard let device = self.device else { return }
+      // Refaire le point au milieu d'un empilement rend les trames
+      // inalignables : le tap est ignoré tant que la pose tourne.
+      guard !self.stackRunning, let device = self.device else { return }
       do {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
@@ -865,7 +978,11 @@ final class CameraEngine: NSObject {
   }
 
   private func applyPointOfInterest(_ point: CGPoint, to device: AVCaptureDevice) {
-    if device.isFocusPointOfInterestSupported {
+    // Mise au point manuelle posée : un tap ne doit pas la reprendre. Elle
+    // était rendue à l'automatique en silence pendant que l'écran continuait
+    // d'afficher « manuel » et la distance choisie. Même garde que pour
+    // l'exposition, juste en dessous.
+    if device.isFocusPointOfInterestSupported, !manualFocusActive {
       device.focusPointOfInterest = point
       if device.isFocusModeSupported(.autoFocus) {
         device.focusMode = .autoFocus
@@ -909,6 +1026,9 @@ final class CameraEngine: NSObject {
       case "balanced": self.photoOutput.maxPhotoQualityPrioritization = .balanced
       default: self.photoOutput.maxPhotoQualityPrioritization = .quality
       }
+      // La capture rapide se déduit de ce choix : demander la qualité et la
+      // laisser active revenait à ne pas la demander.
+      self.reapplyPhotoOutputOptions()
       self.session.commitConfiguration()
     }
   }
@@ -982,7 +1102,7 @@ final class CameraEngine: NSObject {
     let utilisee = assistOptionsOn || loupeOn
     let lourd = video.isActive
       && (video.request.frameRate >= 60 || video.request.wantsProRes || video.request.height >= 2160)
-    setAssistOutputEnabled(utilisee && !lourd)
+    setAssistOutputEnabled(utilisee && !lourd && !thermalThrottled)
   }
 
   /// Types de codes lus dans la préview. Les types disponibles dépendent de la
@@ -1032,12 +1152,34 @@ final class CameraEngine: NSObject {
   /// Ajouter la sortie vidéo désactive Live Photo et peut désactiver la
   /// profondeur : en sortant du mode vidéo, on remet les préférences photo.
   /// À appeler entre `beginConfiguration` et `commitConfiguration`.
+  /// La priorisation de capture rapide autorise la sortie à baisser la qualité
+  /// en rafale. L'activer sans condition annulait la priorisation « qualité »
+  /// demandée cent lignes plus haut : les deux réglages se contredisaient, et
+  /// c'est le rapide qui gagnait en silence.
+  private var fastCapturePrioritization: Bool {
+    photoOutput.maxPhotoQualityPrioritization != .quality
+  }
+
   func reapplyPhotoOutputOptions() {
     if photoOutput.isLivePhotoCaptureSupported {
       photoOutput.isLivePhotoCaptureEnabled = livePhotoEnabled
     }
     if photoOutput.isDepthDataDeliverySupported {
       photoOutput.isDepthDataDeliveryEnabled = depthEnabled
+    }
+    // Ces trois-là étaient posés une seule fois, à la configuration initiale.
+    // Un changement d'objectif recrée la connexion et les perd : le
+    // déclenchement redevenait lent et décalé sans que rien ne le dise.
+    if #available(iOS 17.0, *) {
+      if photoOutput.isZeroShutterLagSupported {
+        photoOutput.isZeroShutterLagEnabled = true
+      }
+      if photoOutput.isResponsiveCaptureSupported {
+        photoOutput.isResponsiveCaptureEnabled = true
+      }
+      if photoOutput.isFastCapturePrioritizationSupported {
+        photoOutput.isFastCapturePrioritizationEnabled = fastCapturePrioritization
+      }
     }
   }
 
@@ -1046,7 +1188,9 @@ final class CameraEngine: NSObject {
   /// démarrer ou lâche des images en pleine prise.
   func setAssistOutputEnabled(_ enabled: Bool) {
     guard let connection = videoDataOutput.connection(with: .video) else { return }
+    guard connection.isEnabled != enabled else { return }
     connection.isEnabled = enabled
+    if !enabled { processor.clearOverlays() }
   }
 
   // MARK: - Pose longue (empilement)
@@ -1305,9 +1449,14 @@ final class CameraEngine: NSObject {
   }
 
   private func makeBracketSettings(stops: [Double]) -> AVCapturePhotoBracketSettings {
+    // Les corrections doivent tenir dans les bornes de l'appareil actif :
+    // au-delà, AVFoundation lève une exception au déclenchement.
+    let bornes = device.map {
+      (min: $0.minExposureTargetBias, max: $0.maxExposureTargetBias)
+    } ?? (min: -8, max: 8)
     let bracketed = stops.map {
       AVCaptureAutoExposureBracketedStillImageSettings.autoExposureSettings(
-        exposureTargetBias: Float($0)
+        exposureTargetBias: min(max(Float($0), bornes.min), bornes.max)
       )
     }
     let settings: AVCapturePhotoBracketSettings
@@ -1326,6 +1475,20 @@ final class CameraEngine: NSObject {
     }
     // Pas de maxPhotoDimensions ici : les brackets ne sont pas garantis en
     // haute résolution (servis en 12 MP en pratique, exception sinon).
+
+    // Le flash suivait l'interrupteur affiché pour une photo simple et pas ici :
+    // l'écran annonçait « flash activé » sur un bracket qui n'en tenait pas
+    // compte.
+    if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
+      settings.flashMode = flashMode
+    }
+    // `.speed` combiné à un bracket lève une exception au déclenchement, et
+    // c'était atteignable en deux taps depuis les réglages. On ne descend
+    // jamais sous `.balanced` ici.
+    settings.photoQualityPrioritization =
+      photoOutput.maxPhotoQualityPrioritization == .speed
+        ? .balanced
+        : photoOutput.maxPhotoQualityPrioritization
     return settings
   }
 
@@ -1420,6 +1583,19 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     self.completion = completion
   }
 
+  /// Nomme le fichier d'après ce qu'il contient vraiment.
+  ///
+  /// L'extension était `.heic` en dur : quand l'appareil ne sert pas de HEVC,
+  /// la sortie est un JPEG, et il partait dans la photothèque sous un nom qui
+  /// annonçait autre chose. On lit donc l'en-tête plutôt que de supposer.
+  static func `extension`(pour data: Data, raw: Bool) -> String {
+    if raw { return "dng" }
+    // JPEG : FF D8 FF. HEIF : la boîte « ftyp » commence au cinquième octet.
+    if data.count >= 3, data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF { return "jpg" }
+    if data.count >= 12, Data(data[4..<8]) == Data("ftyp".utf8) { return "heic" }
+    return "heic"
+  }
+
   func photoOutput(
     _ output: AVCapturePhotoOutput,
     didFinishProcessingPhoto photo: AVCapturePhoto,
@@ -1435,7 +1611,7 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
       }
       return
     }
-    let fileExtension = photo.isRawPhoto ? "dng" : "heic"
+    let fileExtension = Self.extension(pour: data, raw: photo.isRawPhoto)
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("persei-\(UUID().uuidString).\(fileExtension)")
     do {
