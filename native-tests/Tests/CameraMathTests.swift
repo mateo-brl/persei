@@ -103,6 +103,66 @@ final class CameraMathTests: XCTestCase {
     XCTAssertTrue(nan!.zoom.isFinite, "aucun NaN ne doit atteindre le matériel")
   }
 
+  /// Les deux repères doivent se répondre exactement : l'interface lit le zoom
+  /// publié par le moteur et le lui renvoie tel quel. Un aller-retour qui ne
+  /// boucle pas fait sauter d'objectif au premier pincement.
+  func testVirtualZoomIsTheExactInverseOfPhysicalPick() {
+    for zoom in [1.0, 1.5, 1.9, 2.0, 3.0, 4.0, 9.9, 10.0, 25.0] {
+      guard let pick = CameraMath.physicalPick(
+        constituents: proLenses,
+        switchOvers: proSwitchOvers,
+        zoom: zoom
+      ) else {
+        XCTFail("aucune caméra pour le zoom \(zoom)")
+        continue
+      }
+      let retour = CameraMath.virtualZoom(
+        constituents: proLenses,
+        switchOvers: proSwitchOvers,
+        index: pick.index,
+        zoom: pick.zoom
+      )
+      XCTAssertEqual(retour, zoom, accuracy: 1e-9, "aller-retour cassé pour \(zoom)")
+    }
+  }
+
+  /// Le 1× du virtuel vaut 1,0 sur le grand-angle physique : c'est ce couple
+  /// qui décide si le RAW Bayer est atteignable.
+  func testVirtualZoomOnTheWideLens() {
+    XCTAssertEqual(
+      CameraMath.virtualZoom(constituents: proLenses, switchOvers: proSwitchOvers, index: 1, zoom: 1),
+      2,
+      accuracy: 1e-9,
+      "grand-angle à 1,0 = 1× utilisateur = zoom virtuel 2,0"
+    )
+    XCTAssertEqual(
+      CameraMath.virtualZoom(constituents: proLenses, switchOvers: proSwitchOvers, index: 2, zoom: 1),
+      10,
+      accuracy: 1e-9,
+      "télé à 1,0 = 5× utilisateur = zoom virtuel 10,0"
+    )
+  }
+
+  /// Index hors liste ou valeur absurde : on rend la valeur telle quelle
+  /// plutôt qu'un NaN qui finirait au capteur.
+  func testVirtualZoomSurvivesGarbage() {
+    XCTAssertEqual(
+      CameraMath.virtualZoom(constituents: proLenses, switchOvers: proSwitchOvers, index: 9, zoom: 3),
+      3
+    )
+    XCTAssertEqual(
+      CameraMath.virtualZoom(
+        constituents: proLenses, switchOvers: proSwitchOvers, index: 1, zoom: .nan
+      ),
+      1,
+      "aucun NaN ne doit repartir vers l'interface, ni revenir au capteur"
+    )
+    XCTAssertEqual(
+      CameraMath.virtualZoom(constituents: [], switchOvers: [], index: 0, zoom: 2),
+      2
+    )
+  }
+
   // MARK: - Bornes d'exposition
 
   /// Cause du crash du 13 août : le format virtuel annonçait ISO 6400 alors que

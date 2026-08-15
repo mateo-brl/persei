@@ -593,8 +593,33 @@ final class CameraEngine: NSObject {
       "lensPosition": Double(device.lensPosition),
       "exposureBias": Double(device.exposureTargetBias),
       "whiteBalanceKelvin": kelvin,
-      "zoom": Double(device.videoZoomFactor),
+      "zoom": zoomVirtuel(de: device),
     ])
+  }
+
+  /// Zoom exprimé dans le repère du device virtuel, quel que soit l'appareil
+  /// réellement actif.
+  ///
+  /// L'interface lit cette valeur et la renvoie telle quelle à `setZoom` : les
+  /// pastilles s'y comparent, et le pincement en fait sa base. Publier le
+  /// facteur brut d'une caméra physique lui faisait donc lire une échelle et en
+  /// écrire une autre — au premier pincement après un réglage manuel, le
+  /// cadrage sautait d'objectif.
+  private func zoomVirtuel(de device: AVCaptureDevice) -> Double {
+    let brut = Double(device.videoZoomFactor)
+    guard device.constituentDevices.isEmpty,
+          let virtual = savedVirtualDevice,
+          virtual.position == device.position,
+          let index = virtual.constituentDevices.firstIndex(where: {
+            $0.uniqueID == device.uniqueID
+          })
+    else { return brut }
+    return CameraMath.virtualZoom(
+      constituents: virtual.constituentDevices.map(lensSpec(of:)),
+      switchOvers: switchOvers(of: virtual),
+      index: index,
+      zoom: brut
+    )
   }
 
   // MARK: - Manual controls
@@ -716,6 +741,13 @@ final class CameraEngine: NSObject {
       // une correction que le capteur n'appliquait plus.
       applyExposureBiasLocked(to: device)
     } catch {}
+
+    // Le nouvel appareil n'a pas de format vidéo : sans ça, la session filmait
+    // sur un format arbitraire après un réglage manuel, et seul un aller-retour
+    // par l'écran le rattrapait. Même règle qu'à la configuration de session.
+    if video.isActive {
+      applyVideoFormatLocked()
+    }
 
     // Les bornes viennent de changer avec l'objectif : le JS doit les recevoir,
     // sinon ses molettes proposent des valeurs que ce capteur-ci refuse.
@@ -923,6 +955,11 @@ final class CameraEngine: NSObject {
   func setZoom(_ factor: Double) throws {
     var result: Result<Void, Error> = .success(())
     sessionQueue.sync {
+      // Le choix RAW Bayer d'une pose est figé sur un zoom de 1,0 au départ.
+      // Bouger le zoom en cours d'empilement rendait la trame suivante
+      // invalide — c'est très exactement le plantage du 14 août, atteignable
+      // par une pastille de zoom au lieu d'un preset.
+      guard !self.stackRunning else { return }
       guard let device = self.device else {
         result = .failure(CameraEngineError.notRunning)
         return
@@ -942,6 +979,13 @@ final class CameraEngine: NSObject {
       // revenant à l'automatique, le cadrage ne doit pas sauter à ce moment-là.
       self.savedVirtualZoom = CGFloat(factor)
       let cible = self.physicalConstituent(of: virtual, at: CGFloat(factor))
+      // Changer d'entrée pendant un enregistrement coupe le fichier en cours :
+      // les deux autres appelants de switchInputLocked s'en gardent, celui-ci
+      // ne le faisait pas. On zoome dans l'objectif courant, sans en changer.
+      if self.video.isRecording {
+        result = Result { try self.appliquerZoomLocked(cible.zoom, sur: device) }
+        return
+      }
       if cible.device.uniqueID != device.uniqueID {
         self.switchInputLocked(to: cible.device, zoom: cible.zoom)
         return
@@ -1423,6 +1467,9 @@ final class CameraEngine: NSObject {
         && self.photoOutput.maxBracketedCapturePhotoCount >= bracketStops.count
         && !self.photoOutput.isLivePhotoCaptureEnabled
         && !self.photoOutput.isDepthDataDeliveryEnabled
+        // Un bracket ne sait pas déclencher le flash : plutôt qu'un flash
+        // affiché qui ne part pas, on rend la main à la photo simple.
+        && self.flashMode == .off
       let settings: AVCapturePhotoSettings
       if bracketAllowed {
         settings = self.makeBracketSettings(stops: bracketStops)
@@ -1476,19 +1523,20 @@ final class CameraEngine: NSObject {
     // Pas de maxPhotoDimensions ici : les brackets ne sont pas garantis en
     // haute résolution (servis en 12 MP en pratique, exception sinon).
 
-    // Le flash suivait l'interrupteur affiché pour une photo simple et pas ici :
-    // l'écran annonçait « flash activé » sur un bracket qui n'en tenait pas
-    // compte.
-    if let device, device.hasFlash, photoOutput.supportedFlashModes.contains(flashMode) {
-      settings.flashMode = flashMode
-    }
-    // `.speed` combiné à un bracket lève une exception au déclenchement, et
-    // c'était atteignable en deux taps depuis les réglages. On ne descend
-    // jamais sous `.balanced` ici.
-    settings.photoQualityPrioritization =
-      photoOutput.maxPhotoQualityPrioritization == .speed
-        ? .balanced
-        : photoOutput.maxPhotoQualityPrioritization
+    // Le plafond de la sortie fait loi : demander plus haut que
+    // `maxPhotoQualityPrioritization` lève une NSInvalidArgumentException au
+    // déclenchement. La valeur par défaut d'un réglage de capture est
+    // `.balanced` — donc déjà au-dessus dès que l'utilisateur a choisi
+    // « Vitesse », ce qui rendait le bracket mortel sans que rien ne le pose.
+    // Un bracket à exposition automatique n'a aucune exigence propre de
+    // priorisation : recopier le plafond est à la fois sûr et fidèle au choix
+    // de l'utilisateur.
+    settings.photoQualityPrioritization = photoOutput.maxPhotoQualityPrioritization
+
+    // Pas de flash ici : `AVCapturePhotoBracketSettings` ne le supporte pas, et
+    // un bracket n'a de sens que sous une lumière constante. C'est
+    // `bracketAllowed` qui arbitre — flash demandé, on renonce au bracket
+    // plutôt que d'afficher un flash qui ne partira jamais.
     return settings
   }
 

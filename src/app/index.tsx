@@ -648,10 +648,14 @@ export default function CameraScreen() {
     videoSettingsRef.current = videoSettings;
   }, [videoSettings]);
 
+  /** La caméra a répondu au moins une fois : booléen stable, contrairement aux
+   *  capacités, réémises à chaque changement d'objectif. */
+  const cameraPrete = caps != null;
+
   // Entrer en vidéo reconfigure la session (format explicite, micro, sortie
   // fichier). On n'y touche que sur demande, et on en ressort en quittant.
   useEffect(() => {
-    if (!caps) return;
+    if (!cameraPrete) return;
     let cancelled = false;
     (async () => {
       try {
@@ -674,7 +678,11 @@ export default function CameraScreen() {
     return () => {
       cancelled = true;
     };
-  }, [captureMode, caps]);
+    // Volontairement `cameraPrete` et non `caps` : les capacités sont
+    // réémises à chaque bascule d'objectif, et rejouer cette séquence-là
+    // reclampait les réglages vidéo en silence à chaque réglage manuel. Le
+    // format vidéo, lui, est réappliqué côté natif après la bascule.
+  }, [captureMode, cameraPrete]);
 
   const updateVideoSettings = useCallback(
     (patch: Partial<VideoSettings>) => {
