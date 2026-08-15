@@ -39,7 +39,8 @@ public class PerseiCameraModule: Module {
       "onRecordingStopped",
       "onSystemPressure",
       "onCodeDetected",
-      "onCapabilities"
+      "onCapabilities",
+      "onAeAfLock"
     )
 
     OnStartObserving {
@@ -57,6 +58,9 @@ public class PerseiCameraModule: Module {
       }
       CameraEngine.shared.onCapabilities = { [weak self] payload in
         self?.sendEvent("onCapabilities", payload)
+      }
+      CameraEngine.shared.onAeAfLock = { [weak self] payload in
+        self?.sendEvent("onAeAfLock", payload)
       }
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
@@ -82,6 +86,7 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onSystemPressure = nil
       CameraEngine.shared.onCodeDetected = nil
       CameraEngine.shared.onCapabilities = nil
+      CameraEngine.shared.onAeAfLock = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -184,6 +189,11 @@ public class PerseiCameraModule: Module {
 
     AsyncFunction("cancelLongExposure") {
       CameraEngine.shared.cancelLongExposure()
+    }
+
+    /// Relâche le verrouillage AE/AF depuis l'interface.
+    AsyncFunction("releaseAeAfLock") {
+      CameraEngine.shared.setAeAfLock(false, at: CGPoint(x: 0.5, y: 0.5))
     }
 
     /// Rend l'espace disque d'une prise déjà copiée dans la photothèque.

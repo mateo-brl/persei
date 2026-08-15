@@ -92,6 +92,7 @@ final class CameraEngine: NSObject {
   private var _onSystemPressure: (([String: Any]) -> Void)?
   private var _onCodeDetected: (([String: Any]) -> Void)?
   private var _onCapabilities: (([String: Any]) -> Void)?
+  private var _onAeAfLock: (([String: Any]) -> Void)?
 
   private func lues<T>(_ lecture: () -> T) -> T {
     callbackLock.lock()
@@ -375,6 +376,24 @@ final class CameraEngine: NSObject {
     )
   }
 
+  /// Oriente la capture selon la tenue réelle de l'appareil.
+  ///
+  /// Le coordinateur de rotation était créé depuis iOS 17 et branché nulle
+  /// part côté photo : une photo prise en paysage sortait debout, et il fallait
+  /// la redresser à la main dans Photos. On lit l'angle au moment du
+  /// déclenchement plutôt que d'observer les changements en continu — un
+  /// observateur de plus sur un chemin déjà chargé n'apporterait rien, l'angle
+  /// n'ayant d'importance qu'à cet instant.
+  private func appliquerOrientationPhotoLocked() {
+    guard #available(iOS 17.0, *),
+          let coordinateur = rotationCoordinator,
+          let connexion = photoOutput.connection(with: .video)
+    else { return }
+    let angle = coordinateur.videoRotationAngleForHorizonLevelCapture
+    guard connexion.isVideoRotationAngleSupported(angle) else { return }
+    connexion.videoRotationAngle = angle
+  }
+
   /// La sortie photo peut-elle déclencher maintenant ? En mode vidéo Log, ou
   /// pendant une reconfiguration, sa connexion existe mais reste inactive :
   /// déclencher dessus lève une exception au lieu de rendre une erreur.
@@ -382,6 +401,19 @@ final class CameraEngine: NSObject {
     guard let connexion = photoOutput.connection(with: .video) else { return false }
     return connexion.isActive && connexion.isEnabled
   }
+
+  /// Identifiant matériel (« iPhone17,1 »), pour le champ Model des fichiers.
+  static let modeleAppareil: String = {
+    var systeme = utsname()
+    uname(&systeme)
+    return withUnsafeBytes(of: &systeme.machine) { octets in
+      String(decoding: octets.prefix { $0 != 0 }, as: UTF8.self)
+    }
+  }()
+
+  /// Version de l'app, pour le champ Software.
+  static let versionApp: String =
+    (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
 
   /// Supprime un fichier temporaire une fois copié dans la photothèque.
   ///
@@ -1013,6 +1045,12 @@ final class CameraEngine: NSObject {
       // Refaire le point au milieu d'un empilement rend les trames
       // inalignables : le tap est ignoré tant que la pose tourne.
       guard !self.stackRunning, let device = self.device else { return }
+      // Un simple appui relâche le verrou et remesure ailleurs, comme dans
+      // l'app d'Apple : sinon le verrou ne se défait qu'en le cherchant.
+      if self.aeAfLocked {
+        self.aeAfLocked = false
+        self.onAeAfLock?(["locked": false])
+      }
       do {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
@@ -1032,11 +1070,61 @@ final class CameraEngine: NSObject {
         device.focusMode = .autoFocus
       }
     }
-    if device.isExposurePointOfInterestSupported, device.exposureMode != .custom {
+    if !manualExposureActive, device.isExposurePointOfInterestSupported,
+       device.exposureMode != .custom {
       device.exposurePointOfInterest = point
       if device.isExposureModeSupported(.continuousAutoExposure) {
         device.exposureMode = .continuousAutoExposure
       }
+    }
+  }
+
+  /// Verrouillage AE/AF signalé au JS, pour afficher l'état et le défaire.
+  var onAeAfLock: (([String: Any]) -> Void)? {
+    get { lues { _onAeAfLock } }
+    set { callbackLock.lock(); _onAeAfLock = newValue; callbackLock.unlock() }
+  }
+  private(set) var aeAfLocked = false
+
+  /// Verrouille — ou rend — l'exposition et la mise au point sur un point visé.
+  ///
+  /// Geste attendu de toute app photo et absent jusqu'ici : sans lui, recadrer
+  /// après avoir fait le point relance la mesure et change la photo. Les modes
+  /// `.autoFocus` et `.autoExpose` sont des mesures ponctuelles : AVFoundation
+  /// bascule tout seul en `.locked` une fois la convergence atteinte, c'est
+  /// exactement le verrou recherché.
+  ///
+  /// Un réglage manuel déjà posé n'est pas touché : il est plus fort qu'un
+  /// verrou, et le reprendre en silence serait le même mensonge d'état qu'on
+  /// vient de corriger ailleurs.
+  func setAeAfLock(_ actif: Bool, at point: CGPoint) {
+    sessionQueue.async {
+      guard !self.stackRunning, let device = self.device else { return }
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+
+        if !self.manualFocusActive, device.isFocusPointOfInterestSupported {
+          device.focusPointOfInterest = point
+        }
+        if !self.manualExposureActive, device.isExposurePointOfInterestSupported {
+          device.exposurePointOfInterest = point
+        }
+
+        let focus: AVCaptureDevice.FocusMode = actif ? .autoFocus : .continuousAutoFocus
+        if !self.manualFocusActive, device.isFocusModeSupported(focus) {
+          device.focusMode = focus
+        }
+        let exposition: AVCaptureDevice.ExposureMode = actif ? .autoExpose : .continuousAutoExposure
+        if !self.manualExposureActive, device.exposureMode != .custom,
+           device.isExposureModeSupported(exposition) {
+          device.exposureMode = exposition
+        }
+      } catch {
+        return
+      }
+      self.aeAfLocked = actif
+      self.onAeAfLock?(["locked": actif])
     }
   }
 
@@ -1351,8 +1439,23 @@ final class CameraEngine: NSObject {
         zoom: Double(poseDevice.videoZoomFactor),
         compact: true
       ) == .bayer
+      // Orientation figée au départ : la changer en cours d'empilement ferait
+      // tourner les trames les unes par rapport aux autres.
+      self.appliquerOrientationPhotoLocked()
       self.poseStartDate = Date()
       let stacker = FrameStacker(mode: mode, align: align, meteorFilter: meteorFilter)
+      // Conditions de prise, écrites dans le fichier final : sans elles, une
+      // pose sort sans date, sans objectif et sans exposition, et n'est plus
+      // exploitable dès qu'elle quitte l'app.
+      stacker.poseInfo = PoseInfo(
+        secondsPerFrame: poseSeconds,
+        iso: Double(poseIso),
+        aperture: Double(poseDevice.lensAperture),
+        lensName: poseDevice.localizedName,
+        model: Self.modeleAppareil,
+        appVersion: Self.versionApp,
+        date: self.poseStartDate
+      )
       self.captureStackFrame(totalSeconds: seconds, stacker: stacker, completion: completion)
     }
   }
@@ -1459,6 +1562,7 @@ final class CameraEngine: NSObject {
         completion(.failure(CameraEngineError.notRunning))
         return
       }
+      self.appliquerOrientationPhotoLocked()
 
       // Le bracketing est interdit par AVFoundation en combinaison avec le
       // RAW différé, Live Photo et la profondeur : photo simple dans ces cas.
