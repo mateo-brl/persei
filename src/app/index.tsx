@@ -403,6 +403,13 @@ export default function CameraScreen() {
       setPoseDuration(plan.duration);
       setPoseStyle(plan.style);
 
+      // Le zoom d'abord, et c'est un ordre qui compte. Régler l'exposition
+      // manuelle bascule la session sur la caméra physique, où l'échelle du
+      // zoom n'est plus la même : le 1× du device virtuel y devient un
+      // recadrage 2×, qui interdit au passage le RAW Bayer. Posé avant, il
+      // est traduit correctement au moment de la bascule.
+      if (plan.zoom != null) PerseiCamera.setZoom(plan.zoom).catch(() => {});
+
       if (plan.exposure.mode === 'manual') {
         const iso = isoStops[plan.exposure.isoIndex];
         const shutter = shutterStops[plan.exposure.shutterIndex];
@@ -425,7 +432,6 @@ export default function CameraScreen() {
         PerseiCamera.setAutoFocus().catch(() => {});
       }
 
-      if (plan.zoom != null) PerseiCamera.setZoom(plan.zoom).catch(() => {});
       setShowPresets(false);
       setToast(`${preset.emoji} Preset « ${preset.label} » appliqué`);
     },
@@ -574,7 +580,12 @@ export default function CameraScreen() {
         setToast('Accès photothèque refusé');
         return;
       }
-      const uris = await PerseiCamera.startLongExposure(10, 1600, 'mean', true, false, true);
+      // Dernier argument à false : c'est le moteur qui mesure la scène et en
+      // déduit durée et ISO. Un ISO imposé ici surexposait de plusieurs
+      // diaphragmes dès que la scène n'était pas complètement noire — au
+      // seuil de déclenchement, justement, où le mode se déclenche le plus.
+      // L'ISO passé n'est plus lu, il ne reste que pour la forme du contrat.
+      const uris = await PerseiCamera.startLongExposure(10, 1600, 'mean', true, false, false);
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
       setLastUris(uris);
       if (uris[0]) setThumbUri(uris[0]);
