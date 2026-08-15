@@ -335,11 +335,18 @@ export default function CameraScreen() {
    * seconde fois en croyant avoir raté.
    */
   useEffect(() => {
+    let minuteur: ReturnType<typeof setTimeout> | null = null;
     const sub = PerseiCamera.addListener('onShutterFired', () => {
       setFlashEcran(true);
-      setTimeout(() => setFlashEcran(false), 110);
+      if (minuteur) clearTimeout(minuteur);
+      minuteur = setTimeout(() => setFlashEcran(false), 110);
     });
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      // Sans ce nettoyage, l'écran pouvait rester noir si l'utilisateur
+      // quittait l'écran pile pendant l'éclair.
+      if (minuteur) clearTimeout(minuteur);
+    };
   }, []);
 
   /**
@@ -667,10 +674,16 @@ export default function CameraScreen() {
     [applyPreset]
   );
 
+  /** Dernière version d'applyLaunchMode, pour les abonnements posés une fois. */
+  const applyLaunchModeRef = useRef(applyLaunchMode);
+  useEffect(() => {
+    applyLaunchModeRef.current = applyLaunchMode;
+  }, [applyLaunchMode]);
+
   useEffect(() => {
     if (!cameraPrete) return;
-    PerseiCamera.consumeLaunchMode().then(applyLaunchMode).catch(() => {});
-  }, [cameraPrete, applyLaunchMode]);
+    PerseiCamera.consumeLaunchMode().then(applyLaunchModeRef.current).catch(() => {});
+  }, [cameraPrete]);
 
   // Bouton du Centre de contrôle ou de l'écran verrouillé : il ouvre l'app par
   // une URL, la seule chose qu'une extension puisse nous transmettre sans
@@ -678,12 +691,16 @@ export default function CameraScreen() {
   useEffect(() => {
     const traiter = (url: string | null | undefined) => {
       const mode = modeFromUrl(url);
-      if (mode) applyLaunchMode(mode);
+      if (mode) applyLaunchModeRef.current(mode);
     };
+    // L'URL d'ouverture n'est lue qu'une fois. L'effet dépendait d'une chaîne
+    // qui remonte jusqu'aux capacités caméra, désormais réémises à chaque
+    // changement d'objectif : le preset du raccourci se réappliquait alors
+    // tout seul, écrasant ce que l'utilisateur venait de régler.
     Linking.getInitialURL().then(traiter).catch(() => {});
     const sub = Linking.addEventListener('url', (event) => traiter(event.url));
     return () => sub.remove();
-  }, [applyLaunchMode]);
+  }, []);
 
   // App déjà lancée : le raccourci écrit le mode puis nous ramène au premier plan.
   useEffect(() => {
@@ -1069,7 +1086,7 @@ export default function CameraScreen() {
     // Mode nuit auto : scène sombre lue au capteur (l'auto pousse ISO et
     // vitesse à fond), donc pose alignée au lieu d'un cliché bruité.
     if (
-      shouldAutoNight({ autoNight, exposureAuto, front, timerSecs, posing, live: liveRef.current })
+      shouldAutoNight({ autoNight, exposureAuto, front, timerSecs, posing, sombre: sceneSombre })
     ) {
       captureNightShot();
       return;
@@ -1088,6 +1105,7 @@ export default function CameraScreen() {
     cancelCountdown,
     autoNight,
     exposureAuto,
+    sceneSombre,
     timerSecs,
     captureNightShot,
     recording,
@@ -1122,13 +1140,8 @@ export default function CameraScreen() {
    * dit à l'avance ce qui va se passer, et permet de le refuser d'un geste.
    */
   const nuitAnnoncee =
-    sceneSombre &&
-    autoNight &&
-    exposureAuto &&
-    !front &&
-    !posing &&
-    timerSecs === 0 &&
-    captureMode === 'photo';
+    captureMode === 'photo' &&
+    shouldAutoNight({ autoNight, exposureAuto, front, timerSecs, posing, sombre: sceneSombre });
 
   const rulerFor = (param: ParamKey): { count: number; index: number } => {
     switch (param) {

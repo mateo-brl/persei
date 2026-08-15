@@ -311,6 +311,18 @@ extension CameraMath {
     return clampSeconds(min(plafond, sansSurexposition), in: limits)
   }
 
+  /// Priorisation qualité admissible, en valeurs d'`AVCapturePhotoQualityPrioritization`
+  /// (1 = vitesse, 2 = équilibré, 3 = qualité).
+  ///
+  /// Deux règles, et les deux ont déjà tué l'app une fois chacune :
+  /// le RAW Bayer **exige** la vitesse, et aucun réglage ne peut dépasser le
+  /// plafond posé sur la sortie. Les enfreindre lève une exception au
+  /// déclenchement, jamais une erreur.
+  static func qualityPriority(rawKind: RawKind, cap: Int) -> Int {
+    if rawKind == .bayer { return 1 }
+    return max(1, min(cap, 3))
+  }
+
   /// ISO à poser quand on allonge la durée d'exposition.
   ///
   /// La lumière reçue double quand la durée double : l'ISO se divise d'autant.
