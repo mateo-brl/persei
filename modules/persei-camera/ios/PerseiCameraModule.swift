@@ -40,7 +40,8 @@ public class PerseiCameraModule: Module {
       "onSystemPressure",
       "onCodeDetected",
       "onCapabilities",
-      "onAeAfLock"
+      "onAeAfLock",
+      "onShutterFired"
     )
 
     OnStartObserving {
@@ -61,6 +62,9 @@ public class PerseiCameraModule: Module {
       }
       CameraEngine.shared.onAeAfLock = { [weak self] payload in
         self?.sendEvent("onAeAfLock", payload)
+      }
+      CameraEngine.shared.onShutterFired = { [weak self] payload in
+        self?.sendEvent("onShutterFired", payload)
       }
       CameraEngine.shared.onExposureUpdate = { [weak self] payload in
         self?.sendEvent("onExposureUpdate", payload)
@@ -87,6 +91,7 @@ public class PerseiCameraModule: Module {
       CameraEngine.shared.onCodeDetected = nil
       CameraEngine.shared.onCapabilities = nil
       CameraEngine.shared.onAeAfLock = nil
+      CameraEngine.shared.onShutterFired = nil
     }
 
     View(PerseiCameraView.self) {}
@@ -194,6 +199,19 @@ public class PerseiCameraModule: Module {
     /// Relâche le verrouillage AE/AF depuis l'interface.
     AsyncFunction("releaseAeAfLock") {
       CameraEngine.shared.setAeAfLock(false, at: CGPoint(x: 0.5, y: 0.5))
+    }
+
+    /// Réglages conservés d'une ouverture à l'autre, en JSON.
+    ///
+    /// Passe par les réglages système plutôt que par une dépendance de plus :
+    /// le module y écrit déjà le mode réclamé par un raccourci, et une poignée
+    /// de préférences ne justifie pas un pod supplémentaire.
+    AsyncFunction("savePreferences") { (json: String) in
+      UserDefaults.standard.set(json, forKey: "persei.preferences")
+    }
+
+    AsyncFunction("loadPreferences") { () -> String? in
+      UserDefaults.standard.string(forKey: "persei.preferences")
     }
 
     /// Rend l'espace disque d'une prise déjà copiée dans la photothèque.

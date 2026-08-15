@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
 import * as Linking from 'expo-linking';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { Accelerometer } from 'expo-sensors';
 import { SymbolView } from 'expo-symbols';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Updates from 'expo-updates';
@@ -47,7 +48,12 @@ import {
   formatZoomFactor,
 } from '../lib/format';
 import { HELP_TEXTS } from '../lib/help';
-import { shouldAutoNight } from '../lib/night';
+import {
+  darkSceneWithHysteresis,
+  isSteady,
+  nightDurationSeconds,
+  shouldAutoNight,
+} from '../lib/night';
 import { planPreset, SCENE_PRESETS, type ScenePreset } from '../lib/presets';
 import {
   evStopsFor,
@@ -71,6 +77,11 @@ import {
   remainingSeconds,
 } from '../lib/video';
 import { pickThumbnail } from '../lib/capture';
+import {
+  type Preferences,
+  sanitizePreferences,
+  startupPreferences,
+} from '../lib/preferences';
 import { describeCode, isOpenableUrl } from '../lib/codes';
 import { modeFromUrl } from '../lib/launch';
 import { activeZoomIndex, displayZoom, isOnPreset, pinchZoom } from '../lib/zoom';
@@ -170,6 +181,14 @@ export default function CameraScreen() {
   const [code, setCode] = useState<{ value: string; type: string } | null>(null);
   /** Exposition et mise au point verrouillées par un appui long sur la préview. */
   const [aeAfLocked, setAeAfLocked] = useState(false);
+  /** Réglages de la dernière séance relus : tant que non, on n'enregistre pas. */
+  const [prefsChargees, setPrefsChargees] = useState(false);
+  /** Éclair bref à l'instant où le capteur fige l'image. */
+  const [flashEcran, setFlashEcran] = useState(false);
+  /** Scène jugée sombre par la mesure capteur, avec hystérésis. */
+  const [sceneSombre, setSceneSombre] = useState(false);
+  /** Appareil immobile : autorise une pose de nuit plus longue. */
+  const [posee, setPosee] = useState(false);
   const [crashReport, setCrashReport] = useState<string | null>(null);
 
   // Lecture capteur en ref uniquement : pas de re-render du parent à 10 Hz.
@@ -199,9 +218,33 @@ export default function CameraScreen() {
   useEffect(() => {
     const sub = PerseiCamera.addListener('onExposureUpdate', (u) => {
       liveRef.current = u;
+      // Le badge de nuit se décide sur la même mesure, avec hystérésis pour
+      // ne pas clignoter quand elle oscille autour du seuil.
+      setSceneSombre((precedent) => darkSceneWithHysteresis(precedent, u));
     });
     return () => sub.remove();
   }, []);
+
+  /**
+   * Appareil posé ou tenu à la main. Décide de la durée qu'on peut proposer :
+   * dix secondes à main levée, trente sur un support. Écouté seulement quand
+   * la scène est sombre, pour ne pas faire tourner l'accéléromètre en plein
+   * jour.
+   */
+  useEffect(() => {
+    if (!sceneSombre || captureMode === 'video') return;
+    const mesures: number[] = [];
+    Accelerometer.setUpdateInterval(120);
+    const sub = Accelerometer.addListener(({ x, y, z }) => {
+      mesures.push(Math.sqrt(x * x + y * y + z * z));
+      if (mesures.length > 12) mesures.shift();
+      setPosee(isSteady(mesures));
+    });
+    return () => {
+      sub.remove();
+      setPosee(false);
+    };
+  }, [sceneSombre, captureMode]);
 
   useEffect(() => {
     const sub = PerseiCamera.addListener('onLongExposureProgress', setPoseProgress);
@@ -285,6 +328,126 @@ export default function CameraScreen() {
     const sub = PerseiCamera.addListener('onAeAfLock', (p) => setAeAfLocked(p.locked));
     return () => sub.remove();
   }, []);
+
+  /**
+   * Éclair d'obturateur au moment où le capteur fige l'image. Sans lui, rien
+   * ne se passe à l'écran entre l'appui et la vignette, et on appuie une
+   * seconde fois en croyant avoir raté.
+   */
+  useEffect(() => {
+    const sub = PerseiCamera.addListener('onShutterFired', () => {
+      setFlashEcran(true);
+      setTimeout(() => setFlashEcran(false), 110);
+    });
+    return () => sub.remove();
+  }, []);
+
+  /**
+   * Réglages de la dernière séance. Restaurés une seule fois, avant que la
+   * caméra soit prête : appliquer un mode ou une aide après coup ferait
+   * clignoter l'écran au démarrage.
+   */
+  useEffect(() => {
+    let annule = false;
+    (async () => {
+      try {
+        const brut = await PerseiCamera.loadPreferences();
+        if (annule || !brut) {
+          setPrefsChargees(true);
+          return;
+        }
+        const p = startupPreferences(sanitizePreferences(JSON.parse(brut)));
+        setCaptureMode(p.captureMode);
+        setRaw(p.raw);
+        setFlash(p.flash);
+        setLivePhoto(p.livePhoto);
+        setDepth(p.depth);
+        setPhotoMp(p.photoMp);
+        setQuality(p.quality);
+        setBracketEv(p.bracketEv);
+        setTimerSecs(p.timerSecs);
+        setGrid(p.grid);
+        setLevelOn(p.levelOn);
+        setAutoNight(p.autoNight);
+        setCodeScan(p.codeScan);
+        setNightVision(p.nightVision);
+        setPeaking(p.peaking);
+        setZebras(p.zebras);
+        setHistogramOn(p.histogramOn);
+        setPoseDuration(p.poseDuration);
+        setPoseStyle(p.poseStyle);
+        setPoseAlign(p.poseAlign);
+        setPoseMeteor(p.poseMeteor);
+        setVideoSettings(p.video);
+      } catch {
+        // Sauvegarde illisible : on repart des valeurs par défaut, sans bruit.
+      } finally {
+        if (!annule) setPrefsChargees(true);
+      }
+    })();
+    return () => {
+      annule = true;
+    };
+  }, []);
+
+  /**
+   * Enregistrement à chaque changement, jamais avant la restauration : sinon
+   * le premier rendu écraserait la sauvegarde par les valeurs par défaut.
+   */
+  useEffect(() => {
+    if (!prefsChargees) return;
+    const preferences: Preferences = {
+      captureMode,
+      front,
+      raw,
+      flash,
+      livePhoto,
+      depth,
+      photoMp,
+      quality,
+      bracketEv,
+      timerSecs,
+      grid,
+      levelOn,
+      autoNight,
+      codeScan,
+      nightVision,
+      peaking,
+      zebras,
+      histogramOn,
+      poseDuration,
+      poseStyle,
+      poseAlign,
+      poseMeteor,
+      video: videoSettings,
+    };
+    PerseiCamera.savePreferences(JSON.stringify(preferences)).catch(() => {});
+  }, [
+    prefsChargees,
+    captureMode,
+    front,
+    raw,
+    flash,
+    livePhoto,
+    depth,
+    photoMp,
+    quality,
+    bracketEv,
+    timerSecs,
+    grid,
+    levelOn,
+    autoNight,
+    codeScan,
+    nightVision,
+    peaking,
+    zebras,
+    histogramOn,
+    poseDuration,
+    poseStyle,
+    poseAlign,
+    poseMeteor,
+    videoSettings,
+  ]);
 
   // Un changement d'objectif réinitialise le matériel : on réapplique l'état.
   useEffect(() => {
@@ -630,9 +793,10 @@ export default function CameraScreen() {
 
   /** Mode nuit auto : pose alignée de 10 s à la place d'un cliché bruité. */
   const captureNightShot = useCallback(async () => {
+    const secondes = nightDurationSeconds(posee);
     setPosing(true);
     setPoseProgress(null);
-    setToast('Scène sombre : pose de 10 s alignée. Reste stable.');
+    setToast(`Scène sombre : pose de ${secondes} s alignée. Reste stable.`);
     activateKeepAwakeAsync('pose').catch(() => {});
     try {
       const media = await MediaLibrary.requestPermissionsAsync();
@@ -645,7 +809,14 @@ export default function CameraScreen() {
       // diaphragmes dès que la scène n'était pas complètement noire — au
       // seuil de déclenchement, justement, où le mode se déclenche le plus.
       // L'ISO passé n'est plus lu, il ne reste que pour la forme du contrat.
-      const uris = await PerseiCamera.startLongExposure(10, 1600, 'mean', true, false, false);
+      const uris = await PerseiCamera.startLongExposure(
+        secondes,
+        1600,
+        'mean',
+        true,
+        false,
+        false
+      );
       await Promise.all(uris.map((uri) => MediaLibrary.createAssetAsync(uri)));
       purgerTemporaires(uris);
       setLastUris(uris);
@@ -659,7 +830,7 @@ export default function CameraScreen() {
       setPoseProgress(null);
       deactivateKeepAwake('pose').catch(() => {});
     }
-  }, [purgerTemporaires]);
+  }, [purgerTemporaires, posee]);
 
   // MARK: vidéo
 
@@ -946,6 +1117,18 @@ export default function CameraScreen() {
   }
 
   const hasFront = caps?.hasFrontCamera ?? false;
+  /**
+   * Le mode nuit se déclenchait sans prévenir, au moment du déclic. Le badge
+   * dit à l'avance ce qui va se passer, et permet de le refuser d'un geste.
+   */
+  const nuitAnnoncee =
+    sceneSombre &&
+    autoNight &&
+    exposureAuto &&
+    !front &&
+    !posing &&
+    timerSecs === 0 &&
+    captureMode === 'photo';
 
   const rulerFor = (param: ParamKey): { count: number; index: number } => {
     switch (param) {
@@ -996,6 +1179,8 @@ export default function CameraScreen() {
           <Histogram />
         </View>
       ) : null}
+
+      {flashEcran ? <View pointerEvents="none" style={styles.shutterFlash} /> : null}
 
       {countdown > 0 ? (
         <View pointerEvents="none" style={styles.countdownOverlay}>
@@ -1080,6 +1265,19 @@ export default function CameraScreen() {
               <SymbolView name="qrcode.viewfinder" size={15} tintColor="#000" />
               <Text style={styles.codeText} numberOfLines={1}>
                 {describeCode(code.value, code.type)}
+              </Text>
+            </Pressable>
+          ) : null}
+
+          {nuitAnnoncee ? (
+            <Pressable
+              style={styles.nightBanner}
+              onPress={() => setAutoNight(false)}
+              accessibilityLabel="Désactiver la pose de nuit automatique"
+            >
+              <SymbolView name="moon.stars.fill" size={13} tintColor="#ffd60a" />
+              <Text style={styles.nightText}>
+                {`Nuit · pose de ${nightDurationSeconds(posee)} s${posee ? ' (appareil posé)' : ''} — toucher pour désactiver`}
               </Text>
             </Pressable>
           ) : null}
@@ -1966,6 +2164,30 @@ const styles = StyleSheet.create({
     color: '#ffd60a',
     fontSize: 12,
     textAlign: 'center',
+  },
+  shutterFlash: {
+    backgroundColor: '#000',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  nightBanner: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  nightText: {
+    color: '#ffd60a',
+    fontSize: 11,
+    fontWeight: '600',
   },
   lockBanner: {
     alignSelf: 'center',

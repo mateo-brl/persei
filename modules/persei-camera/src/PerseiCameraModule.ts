@@ -68,6 +68,9 @@ declare class PerseiCameraModule extends NativeModule<PerseiCameraEvents> {
   discardTempFile(uri: string): Promise<void>;
   /** Relâche le verrouillage AE/AF posé par un appui long. */
   releaseAeAfLock(): Promise<void>;
+  /** Enregistre les réglages conservés d'une ouverture à l'autre (JSON). */
+  savePreferences(json: string): Promise<void>;
+  loadPreferences(): Promise<string | null>;
 
   /** Autorisation micro, demandée seulement au passage en vidéo. */
   requestMicrophonePermission(): Promise<boolean>;
